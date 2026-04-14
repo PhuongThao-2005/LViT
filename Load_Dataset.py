@@ -10,7 +10,10 @@ from typing import Callable
 import os
 import cv2
 from scipy import ndimage
-from bert_embedding import BertEmbedding
+try:
+    from bert_embedding import BertEmbedding
+except ImportError:
+    BertEmbedding = None
 
 
 def random_rot_flip(image, label):
@@ -105,7 +108,7 @@ class LV2D(Dataset):
         self.one_hot_mask = one_hot_mask
         self.rowtext = row_text
         self.task_name = task_name
-        self.bert_embedding = BertEmbedding()
+        self.bert_embedding = BertEmbedding() if BertEmbedding is not None else None
 
         if joint_transform:
             self.joint_transform = joint_transform
@@ -125,11 +128,14 @@ class LV2D(Dataset):
         mask[mask > 0] = 1
         mask = correct_dims(mask)
         text = self.rowtext[mask_filename]
-        text = text.split('\n')
-        text_token = self.bert_embedding(text)
-        text = np.array(text_token[0][1])
-        if text.shape[0] > 14:
-            text = text[:14, :]
+        if self.bert_embedding is None:
+            text = np.zeros((14, 768), dtype=np.float32)
+        else:
+            text = text.split('\n')
+            text_token = self.bert_embedding(text)
+            text = np.array(text_token[0][1])
+            if text.shape[0] > 14:
+                text = text[:14, :]
         if self.one_hot_mask:
             assert self.one_hot_mask > 0, 'one_hot_mask must be nonnegative'
             mask = torch.zeros((self.one_hot_mask, mask.shape[1], mask.shape[2])).scatter_(0, mask.long(), 1)
@@ -143,7 +149,8 @@ class ImageToImage2D(Dataset):
 
     def __init__(self, dataset_path: str, task_name: str, row_text: str, joint_transform: Callable = None,
                  one_hot_mask: int = False,
-                 image_size: int = 224) -> None:
+                 image_size: int = 224,
+                 unlabeled_image_stems: set | None = None) -> None:
         self.dataset_path = dataset_path
         self.image_size = image_size
         self.input_path = os.path.join(dataset_path, 'img')
@@ -153,7 +160,8 @@ class ImageToImage2D(Dataset):
         self.one_hot_mask = one_hot_mask
         self.rowtext = row_text
         self.task_name = task_name
-        self.bert_embedding = BertEmbedding()
+        self.bert_embedding = BertEmbedding() if BertEmbedding is not None else None
+        self.unlabeled_image_stems = unlabeled_image_stems if unlabeled_image_stems is not None else set()
 
         if joint_transform:
             self.joint_transform = joint_transform
@@ -167,7 +175,21 @@ class ImageToImage2D(Dataset):
     def __getitem__(self, idx):
 
         image_filename = self.images_list[idx]  # MoNuSeg
-        mask_filename = image_filename[: -3] + "png"  # MoNuSeg
+        image_stem, _ = os.path.splitext(image_filename)
+        # Support datasets where masks share the same extension as images (jpg/jpeg/png).
+        candidate_masks = [
+            image_filename,
+            image_stem + ".png",
+            image_stem + ".jpg",
+            image_stem + ".jpeg",
+        ]
+        mask_filename = None
+        for candidate in candidate_masks:
+            if os.path.exists(os.path.join(self.output_path, candidate)):
+                mask_filename = candidate
+                break
+        if mask_filename is None:
+            raise FileNotFoundError("Cannot find mask for image: {}".format(image_filename))
         # mask_filename = self.mask_list[idx]  # Covid19
         # image_filename = mask_filename.replace('mask_', '')  # Covid19
         image = cv2.imread(os.path.join(self.input_path, image_filename))
@@ -178,15 +200,20 @@ class ImageToImage2D(Dataset):
         mask = cv2.resize(mask, (self.image_size, self.image_size))
         mask[mask <= 0] = 0
         mask[mask > 0] = 1
+        if image_stem in self.unlabeled_image_stems:
+            mask = np.zeros_like(mask, dtype=np.uint8)
 
         # correct dimensions if needed
         image, mask = correct_dims(image, mask)
         text = self.rowtext[mask_filename]
-        text = text.split('\n')
-        text_token = self.bert_embedding(text)
-        text = np.array(text_token[0][1])
-        if text.shape[0] > 10:
-            text = text[:10, :]
+        if self.bert_embedding is None:
+            text = np.zeros((10, 768), dtype=np.float32)
+        else:
+            text = text.split('\n')
+            text_token = self.bert_embedding(text)
+            text = np.array(text_token[0][1])
+            if text.shape[0] > 10:
+                text = text[:10, :]
 
         if self.one_hot_mask:
             assert self.one_hot_mask > 0, 'one_hot_mask must be nonnegative'

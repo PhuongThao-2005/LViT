@@ -12,6 +12,7 @@ from Load_Dataset import RandomGenerator, ValGenerator, ImageToImage2D, LV2D
 from nets.LViT import LViT
 from torch.utils.data import DataLoader
 import logging
+import csv
 from Train_one_epoch import train_one_epoch, print_summary
 import Config as config
 from torchvision import transforms
@@ -59,6 +60,49 @@ def worker_init_fn(worker_id):
     random.seed(config.seed + worker_id)
 
 
+def load_text_or_default(dataset_dir, text_filename):
+    text_path = os.path.join(dataset_dir, text_filename)
+    if os.path.exists(text_path):
+        try:
+            return read_text(text_path)
+        except Exception as exc:
+            logger.warning('Cannot read %s (%s). Fallback to default prompts.', text_path, str(exc))
+
+    # Fallback for custom datasets without xlsx annotations.
+    # LViT still expects a text prompt per mask file.
+    label_dir = os.path.join(dataset_dir, 'labelcol')
+    text = {}
+    default_prompt = 'chest xray lesion segmentation EOF XXX EOF XXX EOF XXX EOF XXX'
+    if os.path.isdir(label_dir):
+        for mask_name in os.listdir(label_dir):
+            text[mask_name] = default_prompt
+    logger.warning('Text file not found: %s. Use default prompts for %d masks.', text_path, len(text))
+    return text
+
+
+def load_unlabeled_stems(plan_csv_path):
+    unlabeled = set()
+    if not plan_csv_path:
+        return unlabeled
+    if not os.path.exists(plan_csv_path):
+        logger.warning('Label plan CSV not found: %s. Use all labels.', plan_csv_path)
+        return unlabeled
+    try:
+        with open(plan_csv_path, "r", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                split = str(row.get("split", "")).lower()
+                is_labeled = str(row.get("is_labeled", "")).lower()
+                if split == "train" and is_labeled in ("false", "0", "no"):
+                    image_id = str(row.get("image_id", ""))
+                    if image_id:
+                        unlabeled.add(os.path.splitext(image_id)[0])
+        logger.info('Loaded %d unlabeled train samples from plan CSV.', len(unlabeled))
+    except Exception as exc:
+        logger.warning('Cannot read label plan CSV %s (%s). Use all labels.', plan_csv_path, str(exc))
+    return unlabeled
+
+
 ##################################################################################
 # =================================================================================
 #          Main Loop: load model,
@@ -68,17 +112,24 @@ def main_loop(batch_size=config.batch_size, model_type='', tensorboard=True):
     # Load train and val data
     train_tf = transforms.Compose([RandomGenerator(output_size=[config.img_size, config.img_size])])
     val_tf = ValGenerator(output_size=[config.img_size, config.img_size])
+    unlabeled_train_stems = load_unlabeled_stems(getattr(config, "label_plan_csv", ""))
     if config.task_name == 'MoNuSeg':
         train_text = read_text(config.train_dataset + 'Train_text.xlsx')
         val_text = read_text(config.val_dataset + 'Val_text.xlsx')
         train_dataset = ImageToImage2D(config.train_dataset, config.task_name, train_text, train_tf,
-                                       image_size=config.img_size)
+                                       image_size=config.img_size, unlabeled_image_stems=unlabeled_train_stems)
         val_dataset = ImageToImage2D(config.val_dataset, config.task_name, val_text, val_tf, image_size=config.img_size)
     elif config.task_name == 'Covid19':
         text = read_text(config.task_dataset + 'Train_Val_text.xlsx')
         train_dataset = ImageToImage2D(config.train_dataset, config.task_name, text, train_tf,
-                                       image_size=config.img_size)
+                                       image_size=config.img_size, unlabeled_image_stems=unlabeled_train_stems)
         val_dataset = ImageToImage2D(config.val_dataset, config.task_name, text, val_tf, image_size=config.img_size)
+    else:
+        train_text = load_text_or_default(config.train_dataset, 'Train_text.xlsx')
+        val_text = load_text_or_default(config.val_dataset, 'Val_text.xlsx')
+        train_dataset = ImageToImage2D(config.train_dataset, config.task_name, train_text, train_tf,
+                                       image_size=config.img_size, unlabeled_image_stems=unlabeled_train_stems)
+        val_dataset = ImageToImage2D(config.val_dataset, config.task_name, val_text, val_tf, image_size=config.img_size)
 
 
     train_loader = DataLoader(train_dataset,
@@ -128,8 +179,10 @@ def main_loop(batch_size=config.batch_size, model_type='', tensorboard=True):
     flops, params = profile(model, inputs=(input, text, ))
     print('flops:{}'.format(flops))
     print('params:{}'.format(params))
-    model = model.cuda()
-    if torch.cuda.device_count() > 1:
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    logger.info('Using device: %s', str(device))
+    model = model.to(device)
+    if torch.cuda.device_count() > 1 and device.type == 'cuda':
         print("Let's use {0} GPUs!".format(torch.cuda.device_count()))
         model = nn.DataParallel(model)
     criterion = WeightedDiceBCE(dice_weight=0.5, BCE_weight=0.5)
@@ -202,8 +255,9 @@ if __name__ == '__main__':
     random.seed(config.seed)
     np.random.seed(config.seed)
     torch.manual_seed(config.seed)
-    torch.cuda.manual_seed(config.seed)
-    torch.cuda.manual_seed_all(config.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(config.seed)
+        torch.cuda.manual_seed_all(config.seed)
     if not os.path.isdir(config.save_path):
         os.makedirs(config.save_path)
 

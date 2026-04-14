@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+
+# Jupyter / IDE
+.ipynb_checkpoints/
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs and runtime artifacts
+*.log
+tmp_smoke/
+runs/
+tensorboard_logs/
+
+# Model checkpoints / outputs
+*.pth
+*.pth.tar
+*.pt
+*.ckpt
+BTRXD/
+MoNuSeg/
+Covid19/
+**/models/
+**/visualize_val/
+**/tensorboard_logs/
+
+# Large dataset artifacts (keep folder structure if needed)
+datasets/**/img/
+datasets/**/labelcol/
+datasets/BTRXD_smoke/
+datasets/BTRXD_tumor_l25/
+datasets/BTRXD_tumor_l50/
+
+# Optional: keep generated plans/text if needed; comment out if you want to track them
+# datasets/**/label_plan_*.csv
+# datasets/**/split_info.csv
+# datasets/**/Train_text.xlsx
+# datasets/**/Val_text.xlsx
+# datasets/**/Test_text.xlsx

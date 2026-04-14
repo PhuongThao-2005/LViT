@@ -43,6 +43,7 @@ def print_summary(epoch, i, nb_batch, loss, loss_name, batch_time,
 ##################################################################################
 def train_one_epoch(loader, model, criterion, optimizer, writer, epoch, lr_scheduler, model_type, logger):
     logging_mode = 'Train' if model.training else 'Val'
+    device = next(model.parameters()).device
     end = time.time()
     time_sum, loss_sum = 0, 0
     dice_sum, iou_sum, acc_sum = 0.0, 0.0, 0.0
@@ -54,12 +55,12 @@ def train_one_epoch(loader, model, criterion, optimizer, writer, epoch, lr_sched
         except AttributeError:
             loss_name = criterion.__name__
 
-        # Take variable and put them to GPU
+        # Move data to the same device as the model (GPU or CPU).
         images, masks, text = sampled_batch['image'], sampled_batch['label'], sampled_batch['text']
         if text.shape[1] > 10:
             text = text[ :, :10, :]
         
-        images, masks, text = images.cuda(), masks.cuda(), text.cuda()
+        images, masks, text = images.to(device), masks.to(device), text.to(device)
 
 
         # ====================================================
@@ -80,7 +81,7 @@ def train_one_epoch(loader, model, criterion, optimizer, writer, epoch, lr_sched
         train_iou = iou_on_batch(masks,preds)
 
         batch_time = time.time() - end
-        if epoch % config.vis_frequency == 0 and logging_mode is 'Val':
+        if epoch % config.vis_frequency == 0 and logging_mode == 'Val':
             vis_path = config.visualize_path+str(epoch)+'/'
             if not os.path.isdir(vis_path):
                 os.makedirs(vis_path)
@@ -107,7 +108,8 @@ def train_one_epoch(loader, model, criterion, optimizer, writer, epoch, lr_sched
             train_dice_avg = dice_sum / (i * config.batch_size)
 
         end = time.time()
-        torch.cuda.empty_cache()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         if i % config.print_frequency == 0:
             print_summary(epoch + 1, i, len(loader), out_loss, loss_name, batch_time,
@@ -124,7 +126,8 @@ def train_one_epoch(loader, model, criterion, optimizer, writer, epoch, lr_sched
             # writer.add_scalar(logging_mode + '_acc', train_acc, step)
             writer.add_scalar(logging_mode + '_dice', train_dice, step)
 
-        torch.cuda.empty_cache()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     if lr_scheduler is not None:
         lr_scheduler.step()
