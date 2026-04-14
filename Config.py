@@ -44,11 +44,12 @@ label_plan_csv = './datasets/' + task_name + '/label_plan_25.csv'
 # label_plan_csv = './datasets/' + task_name + '/label_plan_50.csv'
 # label_plan_csv = './datasets/' + task_name + '/label_plan_100.csv'
 session_name = 'Test_session' + '_' + time.strftime('%m.%d_%Hh%M')
-save_path = task_name + '/' + model_name + '/' + session_name + '/'
-model_path = save_path + 'models/'
-tensorboard_folder = save_path + 'tensorboard_logs/'
-logger_path = save_path + session_name + ".log"
-visualize_path = save_path + 'visualize_val/'
+base_save_dir = '/kaggle/working/' if os.path.isdir('/kaggle/working') else './'
+save_path = os.path.join(base_save_dir, task_name, model_name, session_name) + os.sep
+model_path = os.path.join(save_path, 'models') + os.sep
+tensorboard_folder = os.path.join(save_path, 'tensorboard_logs') + os.sep
+logger_path = os.path.join(save_path, session_name + '.log')
+visualize_path = os.path.join(save_path, 'visualize_val') + os.sep
 
 
 ##########################################################################
