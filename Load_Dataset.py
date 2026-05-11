@@ -12,9 +12,61 @@ import cv2
 from scipy import ndimage
 import pandas as pd
 try:
-    from bert_embedding import BertEmbedding
+    from transformers import AutoModel, AutoTokenizer
 except ImportError:
-    BertEmbedding = None
+    AutoModel = None
+    AutoTokenizer = None
+
+
+class HFTextEmbedder:
+    """
+    HuggingFace text embedding wrapper that returns token embeddings with shape
+    [max_tokens, 768] (BERT hidden size), matching existing LViT text pipeline.
+    """
+    def __init__(self, model_name: str = "bert-base-uncased", max_tokens: int = 10):
+        if AutoTokenizer is None or AutoModel is None:
+            raise ImportError(
+                "transformers is required for text embedding. "
+                "Please install it (e.g. pip install transformers)."
+            )
+        self.max_tokens = max_tokens
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.model = AutoModel.from_pretrained(model_name)
+        self.model.eval()
+        self.hidden_size = int(getattr(self.model.config, "hidden_size", 768))
+        self._cache = {}
+
+    def encode(self, text: str) -> np.ndarray:
+        key = text.strip()
+        if key in self._cache:
+            return self._cache[key]
+
+        with torch.no_grad():
+            encoded = self.tokenizer(
+                key,
+                add_special_tokens=True,
+                truncation=True,
+                max_length=self.max_tokens + 2,
+                return_tensors="pt",
+            )
+            outputs = self.model(**encoded)
+            token_embeddings = outputs.last_hidden_state[0]  # [seq_len, hidden]
+            token_embeddings = token_embeddings[1:-1]  # drop [CLS], [SEP]
+            if token_embeddings.shape[0] == 0:
+                arr = np.zeros((self.max_tokens, self.hidden_size), dtype=np.float32)
+                self._cache[key] = arr
+                return arr
+
+            if token_embeddings.shape[0] > self.max_tokens:
+                token_embeddings = token_embeddings[: self.max_tokens]
+
+            arr = token_embeddings.cpu().numpy().astype(np.float32)
+            if arr.shape[0] < self.max_tokens:
+                pad = np.zeros((self.max_tokens - arr.shape[0], self.hidden_size), dtype=np.float32)
+                arr = np.vstack([arr, pad])
+
+            self._cache[key] = arr
+            return arr
 
 
 def random_rot_flip(image, label):
@@ -175,7 +227,7 @@ class LV2D(Dataset):
         self.one_hot_mask = one_hot_mask
         self.rowtext = row_text
         self.task_name = task_name
-        self.bert_embedding = BertEmbedding() if BertEmbedding is not None else None
+        self.text_embedder = HFTextEmbedder(model_name="bert-base-uncased", max_tokens=14)
 
         if joint_transform:
             self.joint_transform = joint_transform
@@ -195,14 +247,7 @@ class LV2D(Dataset):
         mask[mask > 0] = 1
         mask = correct_dims(mask)
         text = self.rowtext[mask_filename]
-        if self.bert_embedding is None:
-            text = np.zeros((14, 768), dtype=np.float32)
-        else:
-            text = text.split('\n')
-            text_token = self.bert_embedding(text)
-            text = np.array(text_token[0][1])
-            if text.shape[0] > 14:
-                text = text[:14, :]
+        text = self.text_embedder.encode(text)
         if self.one_hot_mask:
             assert self.one_hot_mask > 0, 'one_hot_mask must be nonnegative'
             mask = torch.zeros((self.one_hot_mask, mask.shape[1], mask.shape[2])).scatter_(0, mask.long(), 1)
@@ -227,7 +272,7 @@ class ImageToImage2D(Dataset):
         self.one_hot_mask = one_hot_mask
         self.rowtext = row_text
         self.task_name = task_name
-        self.bert_embedding = BertEmbedding() if BertEmbedding is not None else None
+        self.text_embedder = HFTextEmbedder(model_name="bert-base-uncased", max_tokens=10)
         self.unlabeled_image_stems = unlabeled_image_stems if unlabeled_image_stems is not None else set()
 
         if joint_transform:
@@ -273,14 +318,7 @@ class ImageToImage2D(Dataset):
         # correct dimensions if needed
         image, mask = correct_dims(image, mask)
         text = self.rowtext[mask_filename]
-        if self.bert_embedding is None:
-            text = np.zeros((10, 768), dtype=np.float32)
-        else:
-            text = text.split('\n')
-            text_token = self.bert_embedding(text)
-            text = np.array(text_token[0][1])
-            if text.shape[0] > 10:
-                text = text[:10, :]
+        text = self.text_embedder.encode(text)
 
         if self.one_hot_mask:
             assert self.one_hot_mask > 0, 'one_hot_mask must be nonnegative'
