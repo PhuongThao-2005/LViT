@@ -10,6 +10,7 @@ from typing import Callable
 import os
 import cv2
 from scipy import ndimage
+import pandas as pd
 try:
     from bert_embedding import BertEmbedding
 except ImportError:
@@ -81,6 +82,72 @@ def to_long_tensor(pic):
     img = torch.from_numpy(np.array(pic, np.uint8))
     # backward compatibility
     return img.long()
+
+
+def load_unlabeled_stems_from_labels_xlsx(xlsx_path: str) -> set:
+    """
+    Read per-sample mask supervision from an xlsx next to img/labelcol.
+
+    Expected columns (case-insensitive):
+      - Image : mask filename (e.g. IMG000001.png) or image filename
+      - is_labeled OR use_mask OR labeled :
+          if False/0/no → sample is treated as unlabeled (empty mask at train time)
+
+    Returns:
+        set of image stems (no extension) for which pixel mask should be cleared.
+    """
+    if not xlsx_path or not os.path.isfile(xlsx_path):
+        return set()
+
+    try:
+        df = pd.read_excel(xlsx_path)
+    except Exception:
+        return set()
+
+    if df.empty:
+        return set()
+
+    cols = {c.lower(): c for c in df.columns}
+
+    def pick(*names):
+        for n in names:
+            if n.lower() in cols:
+                return cols[n.lower()]
+        return None
+
+    col_img = pick("Image", "image_id", "image", "mask", "file")
+    if col_img is None:
+        return set()
+
+    col_labeled = pick("is_labeled", "labeled", "has_label", "label_mask")
+    col_use_mask = pick("use_mask")
+    if col_labeled is None and col_use_mask is None:
+        return set()
+
+    truthy = {True, 1, "1", "true", "yes", "y"}
+
+    def is_true(v):
+        if pd.isna(v):
+            return False
+        if isinstance(v, str):
+            return v.strip().lower() in truthy
+        return v in truthy
+
+    unlabeled = set()
+    for _, row in df.iterrows():
+        raw = row[col_img]
+        if pd.isna(raw):
+            continue
+        stem = os.path.splitext(str(raw).strip())[0]
+
+        if col_labeled is not None:
+            if not is_true(row[col_labeled]):
+                unlabeled.add(stem)
+        else:
+            if not is_true(row[col_use_mask]):
+                unlabeled.add(stem)
+
+    return unlabeled
 
 
 def correct_dims(*images):

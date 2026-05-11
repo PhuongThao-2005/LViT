@@ -3,7 +3,10 @@
 import torch
 import torch.nn as nn
 import numpy as np
-from timm.models.layers import DropPath
+try:
+    from timm.layers import DropPath
+except ImportError:
+    from timm.models.layers import DropPath
 from torch.nn import Dropout, Conv2d
 from torch.nn.modules.utils import _pair
 

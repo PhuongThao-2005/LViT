@@ -270,8 +270,10 @@ def save_on_batch(images1, masks, pred, names, vis_path):
         mask_tmp[mask_tmp > 0] = 255
         mask_tmp[mask_tmp <= 0] = 0
 
-        cv2.imwrite(vis_path + names[i][:-4] + "_pred.jpg", pred_tmp)
-        cv2.imwrite(vis_path + names[i][:-4] + "_gt.jpg", mask_tmp)
+        pred_u8 = np.asarray(pred_tmp, dtype=np.uint8)
+        mask_u8 = np.asarray(mask_tmp, dtype=np.uint8)
+        cv2.imwrite(vis_path + names[i][:-4] + "_pred.jpg", pred_u8)
+        cv2.imwrite(vis_path + names[i][:-4] + "_gt.jpg", mask_u8)
 
 
 class _LRScheduler(object):

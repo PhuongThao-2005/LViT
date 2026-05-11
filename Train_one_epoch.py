@@ -44,10 +44,13 @@ def print_summary(epoch, i, nb_batch, loss, loss_name, batch_time,
 def train_one_epoch(loader, model, criterion, optimizer, writer, epoch, lr_scheduler, model_type, logger):
     logging_mode = 'Train' if model.training else 'Val'
     device = next(model.parameters()).device
+    accumulation_steps = max(1, int(getattr(config, "accumulation_steps", 1)))
     end = time.time()
     time_sum, loss_sum = 0, 0
     dice_sum, iou_sum, acc_sum = 0.0, 0.0, 0.0
     dices = []
+    if model.training:
+        optimizer.zero_grad()
     for i, (sampled_batch, names) in enumerate(loader, 1):
 
         try:
@@ -73,9 +76,10 @@ def train_one_epoch(loader, model, criterion, optimizer, writer, epoch, lr_sched
 
 
         if model.training:
-            optimizer.zero_grad()
-            out_loss.backward()
-            optimizer.step()
+            (out_loss / accumulation_steps).backward()
+            if (i % accumulation_steps == 0) or (i == len(loader)):
+                optimizer.step()
+                optimizer.zero_grad()
 
         train_dice = criterion._show_dice(preds, masks.float())
         train_iou = iou_on_batch(masks,preds)
