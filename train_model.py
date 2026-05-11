@@ -19,6 +19,9 @@ from utils import CosineAnnealingWarmRestarts, WeightedDiceBCE, WeightedDiceCE, 
 # from thop import profile  # optional: uncomment for FLOPs/params during training, or profile in a separate script
 import argparse
 
+
+logger = logging.getLogger('LViT')
+
 def logger_config(log_path):
     logger = logging.getLogger('LViT')  # Use named logger to avoid conflicts
     if logger.hasHandlers():
@@ -37,66 +40,61 @@ def logger_config(log_path):
     return logger
 
 
-def save_checkpoint(state, save_path):
-    '''
-        Save the current model.
-        If the model is the best model since beginning of the training
-        it will be copy
-    '''
-    logger.info('\t Saving to {}'.format(save_path))
+def save_checkpoint(state, save_path, filename):
+    logger.info("Saving checkpoint: %s", filename)
     if not os.path.isdir(save_path):
         os.makedirs(save_path)
-
-    epoch = state['epoch']  # epoch no
-    best_model = state['best_model']  # bool
-    model = state['model']  # model type
-
-    if best_model:
-        filename = save_path + '/' + \
-                   'best_model-{}.pth.tar'.format(model)
-    else:
-        filename = save_path + '/' + \
-                   'model-{}-{:02d}.pth.tar'.format(model, epoch)
-    torch.save(state, filename)
+    out_path = os.path.join(save_path, filename)
+    torch.save(state, out_path)
+    return out_path
 
 
-def load_checkpoint(model, device, checkpoint_path=None):
-    '''
-        Load checkpoint from file.
-        If checkpoint_path is None, find the latest checkpoint automatically.
-    '''
-    if checkpoint_path is None:
-        # Find latest checkpoint automatically
-        import glob
-        checkpoint_pattern = os.path.join(config.base_save_dir, "**", "models", "*.pth.tar")
-        cands = glob.glob(checkpoint_pattern, recursive=True)
+def find_latest_resume_checkpoint(explicit_path=None):
+    if explicit_path:
+        return explicit_path
 
-        if not cands:
-            logger.warning("No checkpoint found. Starting training from scratch.")
-            return model, None
-
-        # Sort by modification time (newest first)
+    import glob
+    latest_pattern = os.path.join(config.base_save_dir, "**", "models", "latest.pth.tar")
+    cands = glob.glob(latest_pattern, recursive=True)
+    if cands:
         cands.sort(key=os.path.getmtime, reverse=True)
-        checkpoint_path = cands[0]
+        return cands[0]
 
-    logger.info('Loading checkpoint from: {}'.format(checkpoint_path))
+    # Backward-compatible fallback for old checkpoint names.
+    old_pattern = os.path.join(config.base_save_dir, "**", "models", "*.pth.tar")
+    cands = glob.glob(old_pattern, recursive=True)
+    if cands:
+        cands.sort(key=os.path.getmtime, reverse=True)
+        return cands[0]
+    return None
 
-    if not os.path.exists(checkpoint_path):
+
+def update_paths_for_resume(checkpoint_path):
+    ckpt_abs = os.path.abspath(checkpoint_path)
+    model_dir = os.path.dirname(ckpt_abs)
+    save_dir = os.path.dirname(model_dir)
+    session_name = os.path.basename(save_dir.rstrip("\\/"))
+    config.session_name = session_name
+    config.save_path = save_dir + os.sep
+    config.model_path = os.path.join(config.save_path, "models") + os.sep
+    config.tensorboard_folder = os.path.join(config.save_path, "tensorboard_logs") + os.sep
+    config.logger_path = os.path.join(config.save_path, session_name + ".log")
+    config.visualize_path = os.path.join(config.save_path, "visualize_val") + os.sep
+
+
+def load_checkpoint(model, device, checkpoint_path):
+    logger.info("Loading checkpoint from: %s", checkpoint_path)
+    if not checkpoint_path or not os.path.exists(checkpoint_path):
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 
     ckpt = torch.load(checkpoint_path, map_location=device)
-    model.load_state_dict(ckpt["state_dict"], strict=False)
+    state_key = "model_state_dict" if "model_state_dict" in ckpt else "state_dict"
+    model.load_state_dict(ckpt[state_key], strict=False)
 
-    # Display checkpoint info
-    epoch_saved = ckpt.get('epoch', 'unknown')
-    val_loss = ckpt.get('val_loss', 'unknown')
-    is_best = ckpt.get('best_model', False)
-
-    logger.info('Checkpoint info:')
-    logger.info('  - Epoch: {}'.format(epoch_saved + 1 if isinstance(epoch_saved, int) else epoch_saved))
-    logger.info('  - Val loss: {}'.format(val_loss))
-    logger.info('  - Is best model: {}'.format(is_best))
-
+    logger.info("Checkpoint info:")
+    logger.info("  - Epoch: %s", ckpt.get("epoch", "unknown"))
+    logger.info("  - Best dice: %s", ckpt.get("best_dice", "unknown"))
+    logger.info("  - Early stopping count: %s", ckpt.get("early_stopping_count", "unknown"))
     return model, ckpt
 
 def worker_init_fn(worker_id):
@@ -233,12 +231,15 @@ def main_loop(model, batch_size=config.batch_size, model_type='', tensorboard=Tr
         lr_scheduler = None
 
     if resume_ckpt:
-        if 'optimizer' in resume_ckpt and resume_ckpt['optimizer'] is not None:
-            optimizer.load_state_dict(resume_ckpt['optimizer'])
-            logger.info('Optimizer state restored from checkpoint.')
-        if lr_scheduler is not None and 'scheduler' in resume_ckpt and resume_ckpt['scheduler'] is not None:
-            lr_scheduler.load_state_dict(resume_ckpt['scheduler'])
-            logger.info('Scheduler state restored from checkpoint.')
+        optimizer_state = resume_ckpt.get('optimizer_state_dict', resume_ckpt.get('optimizer'))
+        scheduler_state = resume_ckpt.get('scheduler_state_dict', resume_ckpt.get('scheduler'))
+        if optimizer_state is not None:
+            optimizer.load_state_dict(optimizer_state)
+            logger.info('Loaded optimizer state')
+        if lr_scheduler is not None and scheduler_state is not None:
+            lr_scheduler.load_state_dict(scheduler_state)
+            logger.info('Loaded scheduler state')
+        logger.info('Current LR: %.6g', optimizer.param_groups[0]['lr'])
     if tensorboard:
         log_dir = config.tensorboard_folder
         logger.info("TensorBoard log dir: %s", log_dir)
@@ -248,8 +249,10 @@ def main_loop(model, batch_size=config.batch_size, model_type='', tensorboard=Tr
     else:
         writer = None
 
-    max_dice = 0.0
-    best_epoch = 1
+    max_dice = float(resume_ckpt.get("best_dice", 0.0)) if resume_ckpt else 0.0
+    best_epoch = int(resume_ckpt.get("best_epoch", max(0, start_epoch - 1))) if resume_ckpt else 1
+    early_stopping_count = int(resume_ckpt.get("early_stopping_count", 0)) if resume_ckpt else 0
+    logger.info("Save dir: %s", config.save_path)
     for epoch in range(start_epoch, config.epochs):  # loop over the dataset multiple times
         logger.info('\n========= Epoch [{}/{}] ========='.format(epoch + 1, config.epochs))
         logger.info(config.session_name)
@@ -267,34 +270,34 @@ def main_loop(model, batch_size=config.batch_size, model_type='', tensorboard=Tr
         # =============================================================
         #       Save best model
         # =============================================================
-        # Save checkpoint every save_frequency epochs
-        if (epoch + 1) % config.save_frequency == 0:
-            logger.info('\t Saving checkpoint at epoch {}'.format(epoch + 1))
-            save_checkpoint({'epoch': epoch,
-                             'best_model': False,
-                             'model': model_type,
-                             'state_dict': model.state_dict(),
-                             'val_loss': val_loss,
-                             'optimizer': optimizer.state_dict(),
-                             'scheduler': lr_scheduler.state_dict() if lr_scheduler is not None else None}, config.model_path)
-
         if val_dice > max_dice:
-            if epoch + 1 > 5:
-                logger.info(
-                    '\t Saving best model, mean dice increased from: {:.4f} to {:.4f}'.format(max_dice, val_dice))
-                max_dice = val_dice
-                best_epoch = epoch + 1
-                save_checkpoint({'epoch': epoch,
-                                 'best_model': True,
-                                 'model': model_type,
-                                 'state_dict': model.state_dict(),
-                                 'val_loss': val_loss,
-                                 'optimizer': optimizer.state_dict(),
-                                 'scheduler': lr_scheduler.state_dict() if lr_scheduler is not None else None}, config.model_path)
+            logger.info(
+                '\t Saving best model, mean dice increased from: {:.4f} to {:.4f}'.format(max_dice, val_dice))
+            max_dice = val_dice
+            best_epoch = epoch + 1
+            early_stopping_count = 0
         else:
             logger.info('\t Mean dice:{:.4f} does not increase, '
                         'the best is still: {:.4f} in epoch {}'.format(val_dice, max_dice, best_epoch))
-        early_stopping_count = epoch - best_epoch + 1
+            early_stopping_count += 1
+
+        state = {
+            'epoch': epoch,
+            'model': model_type,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'scheduler_state_dict': lr_scheduler.state_dict() if lr_scheduler is not None else None,
+            'val_loss': val_loss,
+            'best_dice': max_dice,
+            'early_stopping_count': early_stopping_count,
+            'best_epoch': best_epoch,
+        }
+        save_checkpoint(state, config.model_path, "latest.pth.tar")
+        if val_dice >= max_dice and early_stopping_count == 0:
+            save_checkpoint(state, config.model_path, "best_model.pth.tar")
+        if config.save_frequency > 0 and ((epoch + 1) % config.save_frequency == 0):
+            periodic_name = "epoch-{:04d}.pth.tar".format(epoch + 1)
+            save_checkpoint(state, config.model_path, periodic_name)
         logger.info('\t early_stopping_count: {}/{}'.format(early_stopping_count, config.early_stopping_patience))
 
         if early_stopping_count > config.early_stopping_patience:
@@ -326,7 +329,13 @@ if __name__ == '__main__':
     if torch.cuda.is_available():
         torch.cuda.manual_seed(config.seed)
         torch.cuda.manual_seed_all(config.seed)
-    if not os.path.isdir(config.save_path):
+    ckpt_path = None
+    if args.resume or args.checkpoint:
+        ckpt_path = find_latest_resume_checkpoint(args.checkpoint)
+        if not ckpt_path:
+            raise FileNotFoundError("No checkpoint found for resume.")
+        update_paths_for_resume(ckpt_path)
+    elif not os.path.isdir(config.save_path):
         os.makedirs(config.save_path)
 
     logger = logger_config(log_path=config.logger_path)
@@ -345,11 +354,11 @@ if __name__ == '__main__':
     # Resume from checkpoint if requested
     ckpt = None
     start_epoch = 0
-    if args.resume or args.checkpoint:
-        model, ckpt = load_checkpoint(model, device, args.checkpoint)
+    if ckpt_path is not None:
+        model, ckpt = load_checkpoint(model, device, ckpt_path)
         if ckpt:
             start_epoch = int(ckpt.get('epoch', -1)) + 1
-            logger.info('Resuming from epoch index: %d', start_epoch)
+            logger.info('Resuming from epoch %d', start_epoch)
             logger.info('Checkpoint loaded successfully. Continuing training...')
         else:
             logger.info('Starting fresh training (no valid checkpoint found)')
