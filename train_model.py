@@ -193,6 +193,13 @@ def main_loop(model, batch_size=config.batch_size, model_type='', tensorboard=Tr
                                        image_size=config.img_size, unlabeled_image_stems=unlabeled_train_stems)
         val_dataset = ImageToImage2D(config.val_dataset, config.task_name, text, val_tf,
                                     image_size=config.img_size, unlabeled_image_stems=val_unlabeled_stems)
+    elif str(config.task_name).startswith('BTRXD'):
+        train_text = load_text_or_default(config.train_dataset, 'Train_text.xlsx')
+        val_text = load_text_or_default(config.val_dataset, 'Val_text.xlsx')
+        train_dataset = ImageToImage2D(config.train_dataset, config.task_name, train_text, train_tf,
+                                       image_size=config.img_size, unlabeled_image_stems=unlabeled_train_stems)
+        val_dataset = ImageToImage2D(config.val_dataset, config.task_name, val_text, val_tf,
+                                    image_size=config.img_size, unlabeled_image_stems=val_unlabeled_stems)
     else:
         train_text = load_text_or_default(config.train_dataset, 'Train_text.xlsx')
         val_text = load_text_or_default(config.val_dataset, 'Val_text.xlsx')
