@@ -24,15 +24,15 @@ print_frequency = 50
 save_frequency = 10
 vis_frequency = 50
 
-early_stopping_patience = 50
+early_stopping_patience = 100
 
 pretrain = False
 
 task_name = 'BTRXD_tumor_l100'
 
 learning_rate = 3e-4 
-batch_size = 1
-accumulation_steps = 8  # Effective batch size = batch_size * accumulation_steps
+batch_size = 4
+accumulation_steps = 2  # Effective batch size = batch_size * accumulation_steps
 
 model_name = 'LViT'
 

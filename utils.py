@@ -189,8 +189,8 @@ class WeightedDiceBCE_unsup(nn.Module):
 class WeightedDiceBCE(nn.Module):
     def __init__(self, dice_weight=1, BCE_weight=1):
         super(WeightedDiceBCE, self).__init__()
-        self.BCE_loss = WeightedBCE(weights=[0.5, 0.5])
-        self.dice_loss = WeightedDiceLoss(weights=[0.5, 0.5])
+        self.BCE_loss  = WeightedBCE(weights=[0.3, 0.7])      # foreground=0.3, background=0.7
+        self.dice_loss = WeightedDiceLoss(weights=[0.3, 0.7]) # foreground weight cao hơn
         self.BCE_weight = BCE_weight
         self.dice_weight = dice_weight
 

@@ -277,7 +277,7 @@ def main_loop(model, batch_size=config.batch_size, model_type='', tensorboard=Tr
         # =============================================================
         #       Save best model
         # =============================================================
-        if val_dice > max_dice:
+        if val_dice > max_dice - 1e-4:
             logger.info(
                 '\t Saving best model, mean dice increased from: {:.4f} to {:.4f}'.format(max_dice, val_dice))
             max_dice = val_dice
