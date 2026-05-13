@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 import os
 from nets.LViT import LViT
+from nets.UNet import UNet
 from utils import *
 import cv2
 
@@ -85,6 +86,8 @@ if __name__ == '__main__':
         config_vit = config.get_CTranS_config()
         model = LViT(config_vit, n_channels=config.n_channels, n_classes=config.n_labels)
 
+    elif str(model_type).lower() == 'unet':
+        model = UNet(n_channels=config.n_channels, n_classes=config.n_labels)
 
     else:
         raise TypeError('Please enter a valid name for the model type')
@@ -93,7 +96,8 @@ if __name__ == '__main__':
     if torch.cuda.device_count() > 1:
        print("Let's use {0} GPUs!".format(torch.cuda.device_count()))
        model = nn.DataParallel(model)
-    model.load_state_dict(checkpoint['state_dict'], strict=False)
+    state_key = "model_state_dict" if "model_state_dict" in checkpoint else "state_dict"
+    model.load_state_dict(checkpoint[state_key], strict=False)
     print('Model loaded !')
     tf_test = ValGenerator(output_size=[config.img_size, config.img_size])
     test_text = read_text(config.test_dataset + 'Test_text.xlsx')

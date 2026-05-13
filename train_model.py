@@ -9,6 +9,7 @@ from torch.backends import cudnn
 import Config
 from Load_Dataset import RandomGenerator, ValGenerator, ImageToImage2D, LV2D, load_unlabeled_stems_from_labels_xlsx
 from nets.LViT import LViT
+from nets.UNet import UNet
 from torch.utils.data import DataLoader
 import logging
 import csv
@@ -348,11 +349,15 @@ if __name__ == '__main__':
     logger = logger_config(log_path=config.logger_path)
 
     # Build model
-    config_vit = config.get_CTranS_config()
-    logger.info('transformer head num: {}'.format(config_vit.transformer.num_heads))
-    logger.info('transformer layers num: {}'.format(config_vit.transformer.num_layers))
-    logger.info('transformer expand ratio: {}'.format(config_vit.expand_ratio))
-    model = LViT(config_vit, n_channels=config.n_channels, n_classes=config.n_labels)
+    if str(config.model_name).lower() == 'unet':
+        logger.info('Building U-Net (no language branch).')
+        model = UNet(n_channels=config.n_channels, n_classes=config.n_labels)
+    else:
+        config_vit = config.get_CTranS_config()
+        logger.info('transformer head num: {}'.format(config_vit.transformer.num_heads))
+        logger.info('transformer layers num: {}'.format(config_vit.transformer.num_layers))
+        logger.info('transformer expand ratio: {}'.format(config_vit.expand_ratio))
+        model = LViT(config_vit, n_channels=config.n_channels, n_classes=config.n_labels)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logger.info('Using device: %s', str(device))

@@ -34,7 +34,7 @@ learning_rate = 3e-4
 batch_size = 4
 accumulation_steps = 2  # Effective batch size = batch_size * accumulation_steps
 
-model_name = 'LViT'
+model_name = 'unet'
 
 train_dataset = './datasets/' + task_name + '/Train_Folder/'
 val_dataset = './datasets/' + task_name + '/Val_Folder/'

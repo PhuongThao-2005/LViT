@@ -85,7 +85,9 @@ class UNet(nn.Module):
         else:
             self.last_activation = None
 
-    def forward(self, x):
+    def forward(self, x, text=None):
+        # Optional `text` matches LViT / dataloader API; plain U-Net ignores it.
+        del text
         x = x.float()
         x1 = self.inc(x)
         x2 = self.down1(x1)
