@@ -78,15 +78,21 @@ if __name__ == '__main__':
 
     checkpoint = torch.load(model_path, map_location='cuda')
 
-    if model_type == 'LViT':
+    _mt = str(model_type).lower().replace('-', '_')
+
+    if _mt == 'lvit':
         config_vit = config.get_CTranS_config()
         model = LViT(config_vit, n_channels=config.n_channels, n_classes=config.n_labels)
 
-    elif model_type == 'LViT_pretrain':
+    elif _mt == 'lvit_pretrain':
         config_vit = config.get_CTranS_config()
         model = LViT(config_vit, n_channels=config.n_channels, n_classes=config.n_labels)
 
-    elif str(model_type).lower() == 'unet':
+    elif _mt == 'lvit_tw':
+        config_vit = config.get_LViT_TW_config()
+        model = LViT(config_vit, n_channels=config.n_channels, n_classes=config.n_labels)
+
+    elif _mt == 'unet':
         model = UNet(n_channels=config.n_channels, n_classes=config.n_labels)
 
     else:

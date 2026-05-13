@@ -156,6 +156,8 @@ class VisionTransformer(nn.Module):  # Transformer-branch
         super(VisionTransformer, self).__init__()
         self.config = config
         self.vis = vis
+        # Paper: LViT-*W = same backbone without fusing text in ViT (ablation). When False, skip CTBN3(text).
+        self.use_text = bool(getattr(config, 'use_text', True))
         self.embeddings = Embeddings(config=config, patch_size=patch_size, img_size=img_size, in_channels=channel_num)
         self.depth = depth
         self.dim = embed_dim
@@ -177,8 +179,8 @@ class VisionTransformer(nn.Module):  # Transformer-branch
     def forward(self, x, skip_x, text, reconstruct=False):
         if not reconstruct:
             x = self.embeddings(x)
-            if self.dim == 64:
-                x = x+self.CTBN3(text)  # [B, num_patches, embed_dim]
+            if self.dim == 64 and self.use_text:
+                x = x + self.CTBN3(text)  # [B, num_patches, embed_dim]
             x = self.Encoder_blocks(x)
         else:
             x = self.Encoder_blocks(x)

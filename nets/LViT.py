@@ -110,14 +110,23 @@ class LViT(nn.Module):
         self.text_module3 = nn.Conv1d(in_channels=512, out_channels=256, kernel_size=3, padding=1)
         self.text_module2 = nn.Conv1d(in_channels=256, out_channels=128, kernel_size=3, padding=1)
         self.text_module1 = nn.Conv1d(in_channels=128, out_channels=64, kernel_size=3, padding=1)
+        self.use_text = bool(getattr(config, 'use_text', True))
 
     def forward(self, x, text):
         x = x.float()  # x [4,3,224,224]
         x1 = self.inc(x)  # x1 [4, 64, 224, 224]
-        text4 = self.text_module4(text.transpose(1, 2)).transpose(1, 2) 
-        text3 = self.text_module3(text4.transpose(1, 2)).transpose(1, 2)
-        text2 = self.text_module2(text3.transpose(1, 2)).transpose(1, 2)
-        text1 = self.text_module1(text2.transpose(1, 2)).transpose(1, 2)
+        if self.use_text:
+            text4 = self.text_module4(text.transpose(1, 2)).transpose(1, 2)
+            text3 = self.text_module3(text4.transpose(1, 2)).transpose(1, 2)
+            text2 = self.text_module2(text3.transpose(1, 2)).transpose(1, 2)
+            text1 = self.text_module1(text2.transpose(1, 2)).transpose(1, 2)
+        else:
+            # LViT-TW: ViT path does not fuse text; keep dummy tensors for shared block signatures.
+            b, device, dtype = text.shape[0], text.device, text.dtype
+            text4 = torch.zeros(b, text.shape[1], 512, device=device, dtype=dtype)
+            text3 = torch.zeros(b, text.shape[1], 256, device=device, dtype=dtype)
+            text2 = torch.zeros(b, text.shape[1], 128, device=device, dtype=dtype)
+            text1 = torch.zeros(b, text.shape[1], 64, device=device, dtype=dtype)
         y1 = self.downVit(x1, x1, text1)
         x2 = self.down1(x1)
         y2 = self.downVit1(x2, y1, text2)

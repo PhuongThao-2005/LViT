@@ -5,6 +5,7 @@ import time
 import ml_collections
 
 ## PARAMETERS OF THE MODEL
+# model_name examples: 'LViT', 'LViT_pretrain', 'LViT_TW' (or 'LViT-TW'), 'UNet'
 save_model = True
 tensorboard = True
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
@@ -34,7 +35,7 @@ learning_rate = 3e-4
 batch_size = 4
 accumulation_steps = 2  # Effective batch size = batch_size * accumulation_steps
 
-model_name = 'unet'
+model_name = 'lvit_tw'
 
 train_dataset = './datasets/' + task_name + '/Train_Folder/'
 val_dataset = './datasets/' + task_name + '/Val_Folder/'
@@ -70,7 +71,16 @@ def get_CTranS_config():
     config.patch_sizes = [16, 8, 4, 2]
     config.base_channel = 64  # base channel of U-Net
     config.n_classes = 1
+    # LViT-T uses text in the ViT branch; LViT-TW (set model_name = 'LViT_TW') sets use_text = False in train/test.
+    config.use_text = True
     return config
+
+
+def get_LViT_TW_config():
+    """Tiny LViT without fusing text into DownViT (paper: W = without text). Same depth as LViT-T."""
+    c = get_CTranS_config()
+    c.use_text = False
+    return c
 
 
 # used in testing phase, copy the session name in training phase

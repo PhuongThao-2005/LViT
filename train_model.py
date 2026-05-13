@@ -349,14 +349,20 @@ if __name__ == '__main__':
     logger = logger_config(log_path=config.logger_path)
 
     # Build model
-    if str(config.model_name).lower() == 'unet':
+    _mn = str(config.model_name).lower().replace('-', '_')
+    if _mn == 'unet':
         logger.info('Building U-Net (no language branch).')
         model = UNet(n_channels=config.n_channels, n_classes=config.n_labels)
     else:
-        config_vit = config.get_CTranS_config()
+        if _mn == 'lvit_tw':
+            config_vit = config.get_LViT_TW_config()
+            logger.info('LViT-TW: ViT branch without text fusion (use_text=False).')
+        else:
+            config_vit = config.get_CTranS_config()
         logger.info('transformer head num: {}'.format(config_vit.transformer.num_heads))
         logger.info('transformer layers num: {}'.format(config_vit.transformer.num_layers))
         logger.info('transformer expand ratio: {}'.format(config_vit.expand_ratio))
+        logger.info('use_text (LViT-T vs LViT-TW): {}'.format(getattr(config_vit, 'use_text', True)))
         model = LViT(config_vit, n_channels=config.n_channels, n_classes=config.n_labels)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
