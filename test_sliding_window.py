@@ -139,7 +139,7 @@ def load_model(device: torch.device):
     model.load_state_dict(checkpoint[state_key], strict=False)
     model = model.to(device)
     model.eval()
-    print(f"✅ Loaded checkpoint: {ckpt_path}")
+    print(f"Loaded checkpoint: {ckpt_path}")
     return model
 
 
@@ -159,7 +159,7 @@ def main():
         label_dir = os.path.join(config.test_dataset, 'labelcol')
         test_text = {f: 'chest xray lesion segmentation EOF XXX EOF XXX EOF XXX EOF XXX'
                      for f in os.listdir(label_dir)}
-        print(f"⚠️  Test_text.xlsx not found. Using default text for {len(test_text)} samples.")
+        print(f"Test_text.xlsx not found. Using default text for {len(test_text)} samples.")
     else:
         test_text = read_text(test_text_path)
 
@@ -189,7 +189,7 @@ def main():
             img_path = os.path.join(img_dir, img_fn)
             image_bgr = cv2.imread(img_path)
             if image_bgr is None:
-                print(f"⚠️  Cannot read {img_path}, skip.")
+                print(f"Cannot read {img_path}, skip.")
                 continue
             H_orig, W_orig = image_bgr.shape[:2]
 
@@ -201,7 +201,7 @@ def main():
                     mask_fn = cand
                     break
             if mask_fn is None:
-                print(f"⚠️  No mask for {img_fn}, skip.")
+                print(f"No mask for {img_fn}, skip.")
                 continue
 
             mask_orig = cv2.imread(mask_fn, 0)
@@ -247,7 +247,7 @@ def main():
     print(f"  Mean IoU : {mean_iou:.4f} ({mean_iou*100:.2f}%)")
     print("=" * 50)
     print()
-    print("📊 So sánh với Phase 1 (resize 224×224):")
+    print(" Comparison with Phase 1 (resize 224×224):")
     print("   Phase 1 best val Dice: 0.6856  (epoch 189)")
     print(f"  Phase 2A SW Dice     : {mean_dice:.4f}")
     print(f"  Δ Dice               : {(mean_dice - 0.6856):+.4f}")
@@ -264,7 +264,7 @@ def main():
         f.write("\nPer-sample results:\n")
         for fn, d, i in zip(image_files[:len(dice_list)], dice_list, iou_list):
             f.write(f"  {fn}: Dice={d:.4f}, IoU={i:.4f}\n")
-    print(f"\n✅ Results saved to: {result_txt}")
+    print(f"\n Results saved to: {result_txt}")
 
 
 if __name__ == '__main__':
