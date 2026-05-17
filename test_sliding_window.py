@@ -111,7 +111,6 @@ def compute_iou(pred_bin: np.ndarray, gt_bin: np.ndarray) -> float:
 
 
 def load_model(device: torch.device):
-    """Load model từ best checkpoint."""
     _mn = str(config.model_name).lower().replace('-', '_')
 
     if _mn in ('lvit', 'lvit_pretrain'):
@@ -125,14 +124,23 @@ def load_model(device: torch.device):
     else:
         raise ValueError(f"Unknown model_name: {config.model_name}")
 
-    # Tìm checkpoint
-    ckpt_path = os.path.join(config.save_path, 'models', 'best_model.pth.tar')
+    # ── Build path từ test_session (không dùng save_path) ──────────────────
+    test_session = getattr(config, 'test_session', None)
+    if test_session is None:
+        raise ValueError("Config.py thiếu test_session. Hãy thêm: test_session = 'DEBUG_...'")
+
+    ckpt_dir = os.path.join(config.base_save_dir, config.task_name,
+                            config.model_name, test_session, 'models')
+    ckpt_path = os.path.join(ckpt_dir, 'best_model.pth.tar')
     if not os.path.exists(ckpt_path):
-        # Fallback: tìm latest.pth.tar
-        ckpt_path = os.path.join(config.save_path, 'models', 'latest.pth.tar')
+        ckpt_path = os.path.join(ckpt_dir, 'latest.pth.tar')
     if not os.path.exists(ckpt_path):
-        raise FileNotFoundError(f"Không tìm thấy checkpoint tại: {ckpt_path}\n"
-                                f"Hãy set đúng config.test_session trong Config.py")
+        raise FileNotFoundError(
+            f"Không tìm thấy checkpoint tại: {ckpt_path}\n"
+            f"test_session hiện tại: {test_session}\n"
+            f"base_save_dir: {config.base_save_dir}"
+        )
+    # ───────────────────────────────────────────────────────────────────────
 
     checkpoint = torch.load(ckpt_path, map_location=device)
     state_key = "model_state_dict" if "model_state_dict" in checkpoint else "state_dict"
