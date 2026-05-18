@@ -12,7 +12,7 @@ from sklearn.metrics import jaccard_score
 import Config as config
 from nets.LViT import LViT
 from patch_dataset import PatchDataset
-from LV_loss.loss import BinaryDiceLoss
+from utils import BinaryDiceLoss
 from Load_Dataset import HFTextEmbedder
 from utils import read_text
 
