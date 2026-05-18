@@ -183,7 +183,14 @@ def main():
     print(f"Test samples: {len(image_files)}")
 
     # Output dir
-    out_dir = os.path.join(config.save_path, 'sliding_window_test')
+    # out_dir = os.path.join(config.save_path, 'sliding_window_test')
+    out_dir = os.path.join(
+        config.base_save_dir,
+        config.task_name,
+        config.model_name,
+        config.test_session,
+        'sliding_window_test'
+    )
     os.makedirs(out_dir, exist_ok=True)
 
     dice_list = []
