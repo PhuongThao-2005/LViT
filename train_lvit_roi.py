@@ -40,6 +40,7 @@ from utils import (
     CosineAnnealingWarmRestarts,
     WeightedDiceBCE,
     read_text,
+    iou_on_batch,
 )
 
 from roi_dataset import ROIPatchDataset, roi_collate_fn, imread_bgr, imread_gray, align_mask_to_image
@@ -206,14 +207,15 @@ def run_periodic_c2f_eval(
 def run_epoch(loader, model, criterion, optimizer, writer,
               epoch: int, is_train: bool, lr_scheduler=None):
     """
-    Returns: (mean_loss, mean_dice_patch224)
-    Dice là trung bình batch trên tensor 224×224 (ROI patch), không phải full ảnh.
+    Returns: (mean_loss, mean_dice_patch224, mean_iou_patch224)
+    Metrics trên ROI patch 224×224 — cùng cách tính Dice/IoU như Train_one_epoch (train_model.py).
     """
     model.train(is_train)
     phase = 'Train' if is_train else 'Val'
 
     total_loss = 0.0
     total_dice = 0.0
+    total_iou  = 0.0
     n_batches  = 0
 
     for batch in loader:
@@ -231,14 +233,14 @@ def run_epoch(loader, model, criterion, optimizer, writer,
             optimizer.step()
 
         with torch.no_grad():
-            prob     = preds if config.n_labels == 1 else torch.sigmoid(preds)
-            pred_bin = (prob > 0.5).float()
-            inter      = (pred_bin * masks).sum(dim=(1, 2, 3))
-            union      = pred_bin.sum(dim=(1, 2, 3)) + masks.sum(dim=(1, 2, 3))
-            dice_batch = ((2.0 * inter + 1e-6) / (union + 1e-6)).mean().item()
+            prob = preds if config.n_labels == 1 else torch.sigmoid(preds)
+            # Giống Train_one_epoch: hard Dice từ criterion, IoU từ iou_on_batch
+            dice_batch = criterion._show_dice(prob, masks.float()).item()
+            iou_batch  = float(iou_on_batch(masks, prob))
 
         total_loss += loss.item()
         total_dice += dice_batch
+        total_iou  += iou_batch
         n_batches  += 1
 
     if is_train and lr_scheduler is not None:
@@ -246,17 +248,19 @@ def run_epoch(loader, model, criterion, optimizer, writer,
 
     mean_loss = total_loss / max(n_batches, 1)
     mean_dice = total_dice / max(n_batches, 1)
+    mean_iou  = total_iou  / max(n_batches, 1)
 
     if writer:
         writer.add_scalar(f'Loss/{phase}', mean_loss, epoch)
         writer.add_scalar(f'Dice_patch224/{phase}', mean_dice, epoch)
+        writer.add_scalar(f'IoU_patch224/{phase}',  mean_iou, epoch)
 
     logger.info(
-        '\t [{}] Epoch {} Loss={:.4f} Dice_patch224={:.4f}'.format(
-            phase, epoch + 1, mean_loss, mean_dice,
+        '\t [{}] Epoch {} Loss={:.4f} Dice={:.4f} IoU={:.4f}'.format(
+            phase, epoch + 1, mean_loss, mean_dice, mean_iou,
         ),
     )
-    return mean_loss, mean_dice
+    return mean_loss, mean_dice, mean_iou
 
 
 def worker_init_fn(worker_id):
@@ -469,7 +473,7 @@ def main():
 
         logger.info('Validation')
         with torch.no_grad():
-            val_loss, val_dice = run_epoch(
+            val_loss, val_dice, val_iou = run_epoch(
                 val_loader, model, criterion, optimizer,
                 writer, epoch, is_train=False,
             )
@@ -505,8 +509,8 @@ def main():
 
         if val_dice > max_dice - 1e-4:
             logger.info(
-                '\t Saving best model, mean dice increased from: {:.4f} to {:.4f}'.format(
-                    max_dice, val_dice,
+                '\t Saving best model, dice {:.4f}→{:.4f}  val IoU={:.4f}'.format(
+                    max_dice, val_dice, val_iou,
                 ),
             )
             max_dice = val_dice
@@ -514,8 +518,10 @@ def main():
             early_stopping_count = 0
         else:
             logger.info(
-                '\t Mean dice:{:.4f} does not increase, '
-                'the best is still: {:.4f} in epoch {}'.format(val_dice, max_dice, best_epoch),
+                '\t Mean dice:{:.4f} IoU:{:.4f} does not increase, '
+                'the best is still: {:.4f} in epoch {}'.format(
+                    val_dice, val_iou, max_dice, best_epoch,
+                ),
             )
             early_stopping_count += 1
 
@@ -526,6 +532,7 @@ def main():
             'optimizer_state_dict': optimizer.state_dict(),
             'scheduler_state_dict': lr_scheduler.state_dict() if lr_scheduler is not None else None,
             'val_loss':             val_loss,
+            'val_iou':              val_iou,
             'best_dice':            max_dice,
             'early_stopping_count': early_stopping_count,
             'best_epoch':           best_epoch,
@@ -551,7 +558,10 @@ def main():
             break
 
     writer.close()
-    logger.info('\nDone. Best val Dice_patch224: %.4f @ epoch %s', max_dice, best_epoch)
+    logger.info(
+        '\nDone. Best val Dice (patch224): %.4f @ epoch %s',
+        max_dice, best_epoch,
+    )
     logger.info('Checkpoint dir: %s', ckpt_dir)
 
 
