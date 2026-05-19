@@ -531,10 +531,12 @@ def read_text(filename):
     df = pd.read_excel(filename)
     text = {}
     for i in df.index.values:  # Gets the index of the row number and traverses it
-        count = len(df.Description[i].split())
+        desc = str(df.loc[i, 'Description'])
+        count = len(desc.split())
         if count < 9:
-            df.Description[i] = df.Description[i] + ' EOF XXX' * (9 - count)
-        text[df.Image[i]] = df.Description[i]
+            desc = desc + ' EOF XXX' * (9 - count)
+            df.loc[i, 'Description'] = desc
+        text[df.loc[i, 'Image']] = desc
     return text  # return dict (key: values)
 
 
@@ -542,10 +544,12 @@ def read_text_LV(filename):
     df = pd.read_excel(filename)
     text = {}
     for i in df.index.values:  # Gets the index of the row number and traverses it
-        count = len(df.Description[i].split())
+        desc = str(df.loc[i, 'Description'])
+        count = len(desc.split())
         if count < 30:
-            df.Description[i] = df.Description[i] + ' EOF XXX' * (20 - count)  # LV_loss: 24
-        text[df.Image[i]] = df.Description[i]
+            desc = desc + ' EOF XXX' * (20 - count)  # LV_loss: 24
+            df.loc[i, 'Description'] = desc
+        text[df.loc[i, 'Image']] = desc
     return text  # return dict (key: values)
 
 
