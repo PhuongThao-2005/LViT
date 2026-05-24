@@ -19,6 +19,7 @@ n_labels = 1
 epochs = 200
 
 img_size = 224
+resize_images = False  # set False to use original image resolution (best with EfficientLViT)
 
 print_frequency = 50
 save_frequency = 10
@@ -28,13 +29,26 @@ early_stopping_patience = 100
 
 pretrain = False
 
-task_name = 'BTRXD_tumor_l100'
+task_name = 'BTRXD_fullsize'
 
 learning_rate = 3e-4 
 batch_size = 4
 accumulation_steps = 2  # Effective batch size = batch_size * accumulation_steps
 
-model_name = 'LViT'
+model_name = 'EfficientLViT'   # or 'EfficientLViT' — see use_efficient_lvit below
+
+# EfficientLViT ViT branch (EfficientLViT.py): local-window attention, resolution-flexible stem
+use_efficient_lvit = True
+efficient_lvit_text_dim = 768
+efficient_lvit_window_size = 14    # 7 for 224; try 14 if img_size >= 512
+efficient_lvit_depth = 1
+efficient_lvit_num_heads = 4
+efficient_lvit_key_dim = 16
+
+window_size = efficient_lvit_window_size
+vit_depth = efficient_lvit_depth
+vit_num_heads = efficient_lvit_num_heads
+vit_key_dim = efficient_lvit_key_dim
 
 train_dataset = './datasets/' + task_name + '/Train_Folder/'
 val_dataset = './datasets/' + task_name + '/Val_Folder/'

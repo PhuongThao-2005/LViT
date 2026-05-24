@@ -8,7 +8,8 @@ import random
 from torch.backends import cudnn
 import Config
 from Load_Dataset import RandomGenerator, ValGenerator, ImageToImage2D, LV2D, load_unlabeled_stems_from_labels_xlsx
-from nets.LViT import LViT
+from nets.LViT import LViT as LViT_base
+from nets.EfficientLViT import LViT as EfficientLViT
 from torch.utils.data import DataLoader
 import logging
 import csv
@@ -155,8 +156,12 @@ def main_loop(model, batch_size=config.batch_size, model_type='', tensorboard=Tr
     logger.info("Training device (from model): %s", device)
 
     # Load train and val data
-    train_tf = transforms.Compose([RandomGenerator(output_size=[config.img_size, config.img_size])])
-    val_tf = ValGenerator(output_size=[config.img_size, config.img_size])
+    train_output_size = [config.img_size, config.img_size] if config.resize_images else None
+    train_tf = transforms.Compose([RandomGenerator(output_size=train_output_size)])
+    val_tf = ValGenerator(output_size=train_output_size)
+    image_size = config.img_size if config.resize_images else None
+    if not config.resize_images and not (config.use_efficient_lvit or config.model_name == 'EfficientLViT'):
+        raise ValueError('resize_images=False is only supported when using EfficientLViT')
     unlabeled_train_stems = load_unlabeled_stems(getattr(config, "label_plan_csv", ""))
     train_labels_xlsx = os.path.join(config.train_dataset, "Train_labels.xlsx")
     if os.path.isfile(train_labels_xlsx):
@@ -184,29 +189,29 @@ def main_loop(model, batch_size=config.batch_size, model_type='', tensorboard=Tr
         train_text = read_text(config.train_dataset + 'Train_text.xlsx')
         val_text = read_text(config.val_dataset + 'Val_text.xlsx')
         train_dataset = ImageToImage2D(config.train_dataset, config.task_name, train_text, train_tf,
-                                       image_size=config.img_size, unlabeled_image_stems=unlabeled_train_stems)
+                                       image_size=image_size, unlabeled_image_stems=unlabeled_train_stems)
         val_dataset = ImageToImage2D(config.val_dataset, config.task_name, val_text, val_tf,
-                                    image_size=config.img_size, unlabeled_image_stems=val_unlabeled_stems)
+                                    image_size=image_size, unlabeled_image_stems=val_unlabeled_stems)
     elif config.task_name == 'Covid19':
         text = read_text(config.task_dataset + 'Train_Val_text.xlsx')
         train_dataset = ImageToImage2D(config.train_dataset, config.task_name, text, train_tf,
-                                       image_size=config.img_size, unlabeled_image_stems=unlabeled_train_stems)
+                                       image_size=image_size, unlabeled_image_stems=unlabeled_train_stems)
         val_dataset = ImageToImage2D(config.val_dataset, config.task_name, text, val_tf,
-                                    image_size=config.img_size, unlabeled_image_stems=val_unlabeled_stems)
+                                    image_size=image_size, unlabeled_image_stems=val_unlabeled_stems)
     elif str(config.task_name).startswith('BTRXD'):
         train_text = load_text_or_default(config.train_dataset, 'Train_text.xlsx')
         val_text = load_text_or_default(config.val_dataset, 'Val_text.xlsx')
         train_dataset = ImageToImage2D(config.train_dataset, config.task_name, train_text, train_tf,
-                                       image_size=config.img_size, unlabeled_image_stems=unlabeled_train_stems)
+                                       image_size=image_size, unlabeled_image_stems=unlabeled_train_stems)
         val_dataset = ImageToImage2D(config.val_dataset, config.task_name, val_text, val_tf,
-                                    image_size=config.img_size, unlabeled_image_stems=val_unlabeled_stems)
+                                    image_size=image_size, unlabeled_image_stems=val_unlabeled_stems)
     else:
         train_text = load_text_or_default(config.train_dataset, 'Train_text.xlsx')
         val_text = load_text_or_default(config.val_dataset, 'Val_text.xlsx')
         train_dataset = ImageToImage2D(config.train_dataset, config.task_name, train_text, train_tf,
-                                       image_size=config.img_size, unlabeled_image_stems=unlabeled_train_stems)
+                                       image_size=image_size, unlabeled_image_stems=unlabeled_train_stems)
         val_dataset = ImageToImage2D(config.val_dataset, config.task_name, val_text, val_tf,
-                                    image_size=config.img_size, unlabeled_image_stems=val_unlabeled_stems)
+                                    image_size=image_size, unlabeled_image_stems=val_unlabeled_stems)
 
 
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, worker_init_fn=worker_init_fn,
@@ -352,7 +357,15 @@ if __name__ == '__main__':
     logger.info('transformer head num: {}'.format(config_vit.transformer.num_heads))
     logger.info('transformer layers num: {}'.format(config_vit.transformer.num_layers))
     logger.info('transformer expand ratio: {}'.format(config_vit.expand_ratio))
-    model = LViT(config_vit, n_channels=config.n_channels, n_classes=config.n_labels)
+
+    model_cls = EfficientLViT if config.use_efficient_lvit or config.model_name == 'EfficientLViT' else LViT_base
+    if model_cls is EfficientLViT:
+        config.window_size = getattr(config, 'efficient_lvit_window_size', 7)
+        config.vit_depth = getattr(config, 'efficient_lvit_depth', 1)
+        config.vit_num_heads = getattr(config, 'efficient_lvit_num_heads', 4)
+        config.vit_key_dim = getattr(config, 'efficient_lvit_key_dim', 16)
+
+    model = model_cls(config_vit, n_channels=config.n_channels, n_classes=config.n_labels)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logger.info('Using device: %s', str(device))

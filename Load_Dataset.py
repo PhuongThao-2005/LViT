@@ -119,7 +119,7 @@ class ValGenerator(object):
         image, label = image.astype(np.uint8), label.astype(np.uint8)  # OSIC
         image, label = F.to_pil_image(image), F.to_pil_image(label)
         x, y = image.size
-        if x != self.output_size[0] or y != self.output_size[1]:
+        if self.output_size and (x != self.output_size[0] or y != self.output_size[1]):
             image = zoom(image, (self.output_size[0] / x, self.output_size[1] / y), order=3)  # why not 3?
             label = zoom(label, (self.output_size[0] / x, self.output_size[1] / y), order=0)
         image = F.to_tensor(image)
@@ -305,11 +305,13 @@ class ImageToImage2D(Dataset):
         # mask_filename = self.mask_list[idx]  # Covid19
         # image_filename = mask_filename.replace('mask_', '')  # Covid19
         image = cv2.imread(os.path.join(self.input_path, image_filename))
-        image = cv2.resize(image, (self.image_size, self.image_size))
+        if self.image_size is not None:
+            image = cv2.resize(image, (self.image_size, self.image_size))
 
         # read mask image
         mask = cv2.imread(os.path.join(self.output_path, mask_filename), 0)
-        mask = cv2.resize(mask, (self.image_size, self.image_size))
+        if self.image_size is not None:
+            mask = cv2.resize(mask, (self.image_size, self.image_size))
         mask[mask <= 0] = 0
         mask[mask > 0] = 1
         if image_stem in self.unlabeled_image_stems:

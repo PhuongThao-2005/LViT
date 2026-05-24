@@ -1,4 +1,5 @@
 import torch.optim
+import torch.nn as nn
 from Load_Dataset import ValGenerator, ImageToImage2D
 from torch.utils.data import DataLoader
 import warnings
@@ -8,7 +9,8 @@ import Config as config
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 import os
-from nets.LViT import LViT
+from nets.LViT import LViT as LViT_base
+from nets.EfficientLViT import LViT as EfficientLViT
 from utils import *
 import cv2
 
@@ -44,15 +46,16 @@ def show_image_with_dice(predict_save, labs, save_path):
     return dice_pred, iou_pred
 
 
-def vis_and_save_heatmap(model, input_img, text, img_RGB, labs, vis_save_path, dice_pred, dice_ens):
+def vis_and_save_heatmap(model, input_img, text, img_RGB, labs, vis_save_path, model_type, dice_pred, dice_ens):
     model.eval()
 
     output = model(input_img.cuda(), text.cuda())
     pred_class = torch.where(output > 0.5, torch.ones_like(output), torch.zeros_like(output))
     predict_save = pred_class[0].cpu().data.numpy()
-    predict_save = np.reshape(predict_save, (config.img_size, config.img_size))
+    if predict_save.ndim == 3 and predict_save.shape[0] == 1:
+        predict_save = predict_save[0]
     dice_pred_tmp, iou_tmp = show_image_with_dice(predict_save, labs,
-                                                  save_path=vis_save_path + '_predict' + model_type + '.jpg')
+                                                  save_path=vis_save_path + '_predict_' + model_type + '.jpg')
     return dice_pred_tmp, iou_tmp
 
 
@@ -77,14 +80,17 @@ if __name__ == '__main__':
 
     checkpoint = torch.load(model_path, map_location='cuda')
 
-    if model_type == 'LViT':
+    if model_type in ('LViT', 'LViT_pretrain'):
         config_vit = config.get_CTranS_config()
-        model = LViT(config_vit, n_channels=config.n_channels, n_classes=config.n_labels)
+        model = LViT_base(config_vit, n_channels=config.n_channels, n_classes=config.n_labels)
 
-    elif model_type == 'LViT_pretrain':
+    elif model_type == 'EfficientLViT':
         config_vit = config.get_CTranS_config()
-        model = LViT(config_vit, n_channels=config.n_channels, n_classes=config.n_labels)
-
+        config.window_size = getattr(config, 'efficient_lvit_window_size', 7)
+        config.vit_depth = getattr(config, 'efficient_lvit_depth', 1)
+        config.vit_num_heads = getattr(config, 'efficient_lvit_num_heads', 4)
+        config.vit_key_dim = getattr(config, 'efficient_lvit_key_dim', 16)
+        model = EfficientLViT(config_vit, n_channels=config.n_channels, n_classes=config.n_labels)
 
     else:
         raise TypeError('Please enter a valid name for the model type')
@@ -95,9 +101,10 @@ if __name__ == '__main__':
        model = nn.DataParallel(model)
     model.load_state_dict(checkpoint['state_dict'], strict=False)
     print('Model loaded !')
-    tf_test = ValGenerator(output_size=[config.img_size, config.img_size])
+    test_output_size = [config.img_size, config.img_size] if config.resize_images else None
+    tf_test = ValGenerator(output_size=test_output_size)
     test_text = read_text(config.test_dataset + 'Test_text.xlsx')
-    test_dataset = ImageToImage2D(config.test_dataset, config.task_name, test_text, tf_test, image_size=config.img_size)
+    test_dataset = ImageToImage2D(config.test_dataset, config.task_name, test_text, tf_test, image_size=config.img_size if config.resize_images else None)
     test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False)
 
     dice_pred = 0.0
@@ -115,7 +122,7 @@ if __name__ == '__main__':
             fig, ax = plt.subplots()
             plt.imshow(img_lab, cmap='gray')
             plt.axis("off")
-            height, width = config.img_size, config.img_size
+            height, width = lab.shape[1], lab.shape[2]
             fig.set_size_inches(width / 100.0 / 3.0, height / 100.0 / 3.0)
             plt.gca().xaxis.set_major_locator(plt.NullLocator())
             plt.gca().yaxis.set_major_locator(plt.NullLocator())
@@ -125,7 +132,7 @@ if __name__ == '__main__':
             plt.close()
             input_img = torch.from_numpy(arr)
             dice_pred_t, iou_pred_t = vis_and_save_heatmap(model, input_img, test_text, None, lab,
-                                                           vis_path + str(names),
+                                                           vis_path + str(names), model_type,
                                                            dice_pred=dice_pred, dice_ens=dice_ens)
             dice_pred += dice_pred_t
             iou_pred += iou_pred_t
