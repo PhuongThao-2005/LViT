@@ -100,7 +100,7 @@ class RandomGenerator(object):
         elif random.random() > 0.5:
             image, label = random_rotate(image, label)
 
-        if x != self.output_size[0] or y != self.output_size[1]:
+        if self.output_size is not None and (x != self.output_size[0] or y != self.output_size[1]):
             image = zoom(image, (self.output_size[0] / x, self.output_size[1] / y), order=3)  # why not 3?
             label = zoom(label, (self.output_size[0] / x, self.output_size[1] / y), order=0)
         image = F.to_tensor(image)
@@ -119,7 +119,7 @@ class ValGenerator(object):
         image, label = image.astype(np.uint8), label.astype(np.uint8)  # OSIC
         image, label = F.to_pil_image(image), F.to_pil_image(label)
         x, y = image.size
-        if self.output_size and (x != self.output_size[0] or y != self.output_size[1]):
+        if self.output_size is not None and (x != self.output_size[0] or y != self.output_size[1]):
             image = zoom(image, (self.output_size[0] / x, self.output_size[1] / y), order=3)  # why not 3?
             label = zoom(label, (self.output_size[0] / x, self.output_size[1] / y), order=0)
         image = F.to_tensor(image)
