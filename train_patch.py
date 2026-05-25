@@ -154,9 +154,19 @@ def main():
             texts = batch['text'].to(device)
 
             optimizer.zero_grad()
+            # with autocast(enabled=use_amp):
+            #     preds = model(imgs, texts)
+            #     loss  = criterion(preds, masks) + bce_loss(preds, masks)
+
             with autocast(enabled=use_amp):
                 preds = model(imgs, texts)
-                loss  = criterion(preds, masks) + bce_loss(preds, masks)
+                dice_l = criterion(preds, masks)   # BinaryDiceLoss — safe với AMP
+
+            with torch.cuda.amp.autocast(enabled=False):
+                preds_fp32 = preds.float()         # ép về float32 để BCE an toàn
+                bce_l = bce_loss(preds_fp32, masks.float())
+
+            loss = dice_l + bce_l
 
             scaler.scale(loss).backward()
             scaler.step(optimizer)
