@@ -191,26 +191,48 @@ class LViT(nn.Module):
         text2 = self.text_module2(text3.transpose(1, 2)).transpose(1, 2)  # (B,T,C*2)
         text1 = self.text_module1(text2.transpose(1, 2)).transpose(1, 2)  # (B,T,C)
 
-        y1 = self.downVit (x1, x1, text1)          # (B, N1, C) 
-        x2 = self.down1(x1)                         # (B, C*2, H/2,  W/2)
-        y2 = self.downVit1(x2, y1, text2)           # (B, N2, C*2)
-        x3 = self.down2(x2)                         # (B, C*4, H/4,  W/4)
-        y3 = self.downVit2(x3, y2, text3)           # (B, N3, C*4)
-        x4 = self.down3(x3)                         # (B, C*8, H/8,  W/8)
-        y4 = self.downVit3(x4, y3, text4)           # (B, N4, C*8)
-        x5 = self.down4(x4)                         # (B, C*8, H/16, W/16)
+        # y1 = self.downVit (x1, x1, text1)          # (B, N1, C) 
+        # x2 = self.down1(x1)                         # (B, C*2, H/2,  W/2)
+        # y2 = self.downVit1(x2, y1, text2)           # (B, N2, C*2)
+        # x3 = self.down2(x2)                         # (B, C*4, H/4,  W/4)
+        # y3 = self.downVit2(x3, y2, text3)           # (B, N3, C*4)
+        # x4 = self.down3(x3)                         # (B, C*8, H/8,  W/8)
+        # y4 = self.downVit3(x4, y3, text4)           # (B, N4, C*8)
+        # x5 = self.down4(x4)                         # (B, C*8, H/16, W/16)
 
-        # ── ViT up path / reconstruct ───────────────────────────────────────
-        y4 = self.upVit3(y4, y4,  text4, reconstruct=True)
-        y3 = self.upVit2(y3, y4,  text3, reconstruct=True)
-        y2 = self.upVit1(y2, y3,  text2, reconstruct=True)
-        y1 = self.upVit (y1, y2,  text1, reconstruct=True)
+        # # ── ViT up path / reconstruct ───────────────────────────────────────
+        # y4 = self.upVit3(y4, y4,  text4, reconstruct=True)
+        # y3 = self.upVit2(y3, y4,  text3, reconstruct=True)
+        # y2 = self.upVit1(y2, y3,  text2, reconstruct=True)
+        # y1 = self.upVit (y1, y2,  text1, reconstruct=True)
 
-        # ── seq → spatial, residual add ─────────────────────────────────────
-        x1 = self.reconstruct1(y1) + x1
-        x2 = self.reconstruct2(y2) + x2
-        x3 = self.reconstruct3(y3) + x3
-        x4 = self.reconstruct4(y4) + x4
+        # # ── seq → spatial, residual add ─────────────────────────────────────
+        # x1 = self.reconstruct1(y1) + x1
+        # x2 = self.reconstruct2(y2) + x2
+        # x3 = self.reconstruct3(y3) + x3
+        # x4 = self.reconstruct4(y4) + x4
+
+        # ── Down path — lưu H,W thực tế ──────────────────────────────────────
+        y1, H1, W1 = self.downVit (x1, x1, text1)   # H1 = H/16,  W1 = W/16
+        x2 = self.down1(x1)
+        y2, H2, W2 = self.downVit1(x2, y1, text2)   # H2 = H/8,   W2 = W/8
+        x3 = self.down2(x2)
+        y3, H3, W3 = self.downVit2(x3, y2, text3)   # H3 = H/4,   W3 = W/4
+        x4 = self.down3(x3)
+        y4, H4, W4 = self.downVit3(x4, y3, text4)   # H4 = H/2,   W4 = W/2
+        x5 = self.down4(x4)
+
+        # ── Up path — truyền H,W thực vào reconstruct ────────────────────────
+        y4, _, _ = self.upVit3(y4, y4, text4, reconstruct=True, hw=(H4, W4))
+        y3, _, _ = self.upVit2(y3, y4, text3, reconstruct=True, hw=(H3, W3))
+        y2, _, _ = self.upVit1(y2, y3, text2, reconstruct=True, hw=(H2, W2))
+        y1, _, _ = self.upVit (y1, y2, text1, reconstruct=True, hw=(H1, W1))
+
+        # ── seq → spatial với H,W đúng ───────────────────────────────────────
+        x1 = self.reconstruct1(y1, h=H1, w=W1) + x1
+        x2 = self.reconstruct2(y2, h=H2, w=W2) + x2
+        x3 = self.reconstruct3(y3, h=H3, w=W3) + x3
+        x4 = self.reconstruct4(y4, h=H4, w=W4) + x4
 
         # ── CNN decoder ──────────────────────────────────────────────────────
         x = self.up4(x5, x4)

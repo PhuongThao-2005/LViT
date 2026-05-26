@@ -376,7 +376,7 @@ class EfficientViTBranch(nn.Module):
         return h, w
 
     # ── forward ───────────────────────────────────────────────────────────
-    def forward(self, x, skip_x, text, reconstruct=False):
+    def forward(self, x, skip_x, text, reconstruct=False, hw=None):
         if not reconstruct:
             # ── Down path ─────────────────────────────────────────────
             feat = self.patch_embed(x)            # (B, embed_dim, H', W')
@@ -391,19 +391,24 @@ class EfficientViTBranch(nn.Module):
             # finest scale (downVit) or bottleneck → return tokens directly
             if self.finest_scale or self.is_bottleneck:
                 seq, _, _ = self.to_seq(feat)
-                return self.norm(seq)             # (B, N, embed_dim)
+                return self.norm(seq), H, W             # (B, N, embed_dim); add H, W for skip merge in up path
 
             # other scales: halve channels, cat with previous skip (seq)
             # mirrors: CTBN(x) → cat([x_half, skip_x]) in original Vit.py
             feat_half = self.chan_half(feat)      # (B, embed_dim//2, H', W')
             seq_half, _, _ = self.to_seq(feat_half)
             merged = torch.cat([seq_half, skip_x], dim=2)  # (B, N, embed_dim)
-            return self.norm(merged)
+            return self.norm(merged), H, W
 
         else:
             # ── Reconstruct / Up path ─────────────────────────────────
             # mirrors: Encoder_blocks(x)  +  CTBN2(skip_x)  →  x + skip
-            h, w = self._hw(x)
+            # h, w = self._hw(x)
+
+            # hw=(H,W) được truyền từ ngoài vào — không đoán nữa (hw=(H,W) )
+            assert hw is not None, "reconstruct=True requires hw=(H,W)"
+            h, w = hw                         # use H,W real
+
             x_sp = self.blocks(self.to_spatial(x, h, w))  # (B, C, h, w)
             x, _, _ = self.to_seq(x_sp)                   # (B, N, embed_dim)
 
@@ -412,12 +417,13 @@ class EfficientViTBranch(nn.Module):
                 skip = self.skip_proj(skip)
             # align token count if deeper level has different resolution
             if skip.shape[1] != x.shape[1]:
-                sk_sp = self.to_spatial(skip, *self._hw(skip))
+                # sk_sp = self.to_spatial(skip, *self._hw(skip))
+                sk_sp = self.to_spatial(skip, h, w)  # use same h,w as upsampled
                 sk_sp = F.interpolate(sk_sp, size=(h, w),
                                       mode='bilinear', align_corners=False)
                 skip, _, _ = self.to_seq(sk_sp)
 
-            return self.norm(x + skip)            # (B, N, embed_dim)
+            return self.norm(x + skip), h, w            # (B, N, embed_dim); add h, w for skip merge in up path
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -434,13 +440,20 @@ class Reconstruct(nn.Module):
         self.activation = nn.ReLU(inplace=True)
         self.scale_factor = scale_factor
 
-    def forward(self, x):
+    def forward(self, x, h=None, w=None):
         if x is None:
             return None
         B, n_patch, hidden = x.size()
-        h, w = int(np.sqrt(n_patch)), int(np.sqrt(n_patch))
-        x = x.permute(0, 2, 1)
-        x = x.contiguous().view(B, hidden, h, w)
+        if h is None or w is None:
+            # fallback cho square (backward compat với MoNuSeg 224×224)
+            h = w = int(np.sqrt(n_patch))
+        assert h * w == n_patch, \
+            f"Reconstruct: h*w={h*w} ≠ n_patch={n_patch}. " \
+            f"Pass hw explicitly for non-square images."
+        x = x.permute(0, 2, 1).contiguous().view(B, hidden, h, w)
+        # h, w = int(np.sqrt(n_patch)), int(np.sqrt(n_patch))
+        # x = x.permute(0, 2, 1)
+        # x = x.contiguous().view(B, hidden, h, w)
         x = F.interpolate(x, scale_factor=self.scale_factor,
                           mode='bilinear', align_corners=False)
         out = self.conv(x)
