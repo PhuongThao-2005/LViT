@@ -69,7 +69,7 @@ def train_one_epoch(loader, model, criterion, optimizer, writer, epoch, lr_sched
 
         # ── Semi-supervised: bỏ qua loss trên các sample unlabeled (mask toàn 0)
         # Phát hiện unlabeled: mask toàn zero → không đóng góp vào loss
-        labeled_mask = masks.sum(dim=(-2, -1)).squeeze() > 0   # (B,) True nếu có label thực
+        labeled_mask = masks.sum(dim=(-2, -1)).view(-1) > 0   # (B,) True nếu có label thực
         # Vẫn forward toàn batch để tận dụng batch norm statistics
         preds = model(images, text)
 
