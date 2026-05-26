@@ -17,16 +17,17 @@ from Train_one_epoch import train_one_epoch, print_summary
 import Config as config
 from torchvision import transforms
 from utils import CosineAnnealingWarmRestarts, WeightedDiceBCE, WeightedDiceCE, read_text, read_text_LV, save_on_batch
-# from thop import profile  # optional: uncomment for FLOPs/params during training, or profile in a separate script
 import argparse
+import torch.cuda.amp as amp
 
 
 logger = logging.getLogger('LViT')
 
+
 def logger_config(log_path):
-    logger = logging.getLogger('LViT')  # Use named logger to avoid conflicts
+    logger = logging.getLogger('LViT')
     if logger.hasHandlers():
-        logger.handlers.clear()  # Clear existing handlers to avoid duplicates
+        logger.handlers.clear()
     logger.setLevel(level=logging.INFO)
     handler = logging.FileHandler(log_path, encoding='UTF-8')
     handler.setLevel(logging.INFO)
@@ -36,7 +37,6 @@ def logger_config(log_path):
     console.setLevel(logging.INFO)
     logger.addHandler(handler)
     logger.addHandler(console)
-    # Avoid duplicate lines in notebooks (root logger often has its own handler).
     logger.propagate = False
     return logger
 
@@ -53,15 +53,12 @@ def save_checkpoint(state, save_path, filename):
 def find_latest_resume_checkpoint(explicit_path=None):
     if explicit_path:
         return explicit_path
-
     import glob
     latest_pattern = os.path.join(config.base_save_dir, "**", "models", "latest.pth.tar")
     cands = glob.glob(latest_pattern, recursive=True)
     if cands:
         cands.sort(key=os.path.getmtime, reverse=True)
         return cands[0]
-
-    # Backward-compatible fallback for old checkpoint names.
     old_pattern = os.path.join(config.base_save_dir, "**", "models", "*.pth.tar")
     cands = glob.glob(old_pattern, recursive=True)
     if cands:
@@ -87,19 +84,19 @@ def load_checkpoint(model, device, checkpoint_path):
     logger.info("Loading checkpoint from: %s", checkpoint_path)
     if not checkpoint_path or not os.path.exists(checkpoint_path):
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
-
     ckpt = torch.load(checkpoint_path, map_location=device)
     state_key = "model_state_dict" if "model_state_dict" in ckpt else "state_dict"
     model.load_state_dict(ckpt[state_key], strict=False)
-
     logger.info("Checkpoint info:")
     logger.info("  - Epoch: %s", ckpt.get("epoch", "unknown"))
     logger.info("  - Best dice: %s", ckpt.get("best_dice", "unknown"))
     logger.info("  - Early stopping count: %s", ckpt.get("early_stopping_count", "unknown"))
     return model, ckpt
 
+
 def worker_init_fn(worker_id):
     random.seed(config.seed + worker_id)
+
 
 def dynamic_pad_collate(batch):
     """
@@ -111,14 +108,13 @@ def dynamic_pad_collate(batch):
     samples = [b[0] for b in batch]
     names   = [b[1] for b in batch]
 
-    images = [s['image'] for s in samples]   # list of Tensor (C, H_i, W_i)
-    labels = [s['label'] for s in samples]   # list of Tensor (H_i, W_i) hoặc (1, H_i, W_i)
-    texts  = [s['text']  for s in samples]   # list of Tensor (T, D) — same size
+    images = [s['image'] for s in samples]
+    labels = [s['label'] for s in samples]
+    texts  = [s['text']  for s in samples]
 
     max_h = max(img.shape[1] for img in images)
     max_w = max(img.shape[2] for img in images)
 
-    # pad (left=0, right=pad_w, top=0, bottom=pad_h) — F.pad dùng thứ tự ngược: (W_right, W_left, H_bottom, H_top)
     images_pad = torch.stack([
         TF.pad(img, (0, max_w - img.shape[2], 0, max_h - img.shape[1]))
         for img in images
@@ -126,11 +122,11 @@ def dynamic_pad_collate(batch):
 
     labels_pad = []
     for lbl in labels:
-        if lbl.dim() == 2:                          # (H, W)
+        if lbl.dim() == 2:
             lbl_p = TF.pad(lbl.unsqueeze(0).float(),
                            (0, max_w - lbl.shape[1], 0, max_h - lbl.shape[0]))
             labels_pad.append(lbl_p.squeeze(0).long())
-        else:                                        # (1, H, W) hoặc (C, H, W)
+        else:
             lbl_p = TF.pad(lbl.float(),
                            (0, max_w - lbl.shape[2], 0, max_h - lbl.shape[1]))
             labels_pad.append(lbl_p.long())
@@ -147,9 +143,6 @@ def load_text_or_default(dataset_dir, text_filename):
             return read_text(text_path)
         except Exception as exc:
             logger.warning('Cannot read %s (%s). Fallback to default prompts.', text_path, str(exc))
-
-    # Fallback for custom datasets without xlsx annotations.
-    # LViT still expects a text prompt per mask file.
     label_dir = os.path.join(dataset_dir, 'labelcol')
     text = {}
     default_prompt = 'chest xray lesion segmentation EOF XXX EOF XXX EOF XXX EOF XXX'
@@ -185,7 +178,7 @@ def load_unlabeled_stems(plan_csv_path):
 
 ##################################################################################
 # =================================================================================
-#          Main Loop: load model,
+#          Main Loop
 # =================================================================================
 ##################################################################################
 def main_loop(model, batch_size=config.batch_size, model_type='', tensorboard=True, resume_ckpt=None, start_epoch=0):
@@ -193,96 +186,79 @@ def main_loop(model, batch_size=config.batch_size, model_type='', tensorboard=Tr
     use_cuda = device.type == "cuda"
     logger.info("Training device (from model): %s", device)
 
-    # Load train and val data
     train_output_size = [config.img_size, config.img_size] if config.resize_images else None
     train_tf = transforms.Compose([RandomGenerator(output_size=train_output_size)])
     val_tf = ValGenerator(output_size=train_output_size)
     image_size = config.img_size if config.resize_images else None
+
     if not config.resize_images and not (config.use_efficient_lvit or config.model_name == 'EfficientLViT'):
         raise ValueError('resize_images=False is only supported when using EfficientLViT')
+
     unlabeled_train_stems = load_unlabeled_stems(getattr(config, "label_plan_csv", ""))
     train_labels_xlsx = os.path.join(config.train_dataset, "Train_labels.xlsx")
     if os.path.isfile(train_labels_xlsx):
         from_xlsx = load_unlabeled_stems_from_labels_xlsx(train_labels_xlsx)
         if from_xlsx:
             unlabeled_train_stems |= from_xlsx
-            logger.info(
-                "Merged %d unlabeled train stems from labels xlsx: %s",
-                len(from_xlsx),
-                train_labels_xlsx,
-            )
+            logger.info("Merged %d unlabeled train stems from labels xlsx: %s",
+                        len(from_xlsx), train_labels_xlsx)
+
     val_labels_xlsx = os.path.join(config.val_dataset, "Val_labels.xlsx")
     val_unlabeled_stems = (
         load_unlabeled_stems_from_labels_xlsx(val_labels_xlsx)
-        if os.path.isfile(val_labels_xlsx)
-        else set()
+        if os.path.isfile(val_labels_xlsx) else set()
     )
     if val_unlabeled_stems:
-        logger.info(
-            "Val set: %d samples will use empty masks per Val_labels.xlsx",
-            len(val_unlabeled_stems),
-        )
+        logger.info("Val set: %d samples will use empty masks per Val_labels.xlsx",
+                    len(val_unlabeled_stems))
 
     if config.task_name == 'MoNuSeg':
         train_text = read_text(config.train_dataset + 'Train_text.xlsx')
-        val_text = read_text(config.val_dataset + 'Val_text.xlsx')
+        val_text   = read_text(config.val_dataset   + 'Val_text.xlsx')
         train_dataset = ImageToImage2D(config.train_dataset, config.task_name, train_text, train_tf,
                                        image_size=image_size, unlabeled_image_stems=unlabeled_train_stems)
-        val_dataset = ImageToImage2D(config.val_dataset, config.task_name, val_text, val_tf,
-                                    image_size=image_size, unlabeled_image_stems=val_unlabeled_stems)
+        val_dataset   = ImageToImage2D(config.val_dataset,   config.task_name, val_text,   val_tf,
+                                       image_size=image_size, unlabeled_image_stems=val_unlabeled_stems)
     elif config.task_name == 'Covid19':
         text = read_text(config.task_dataset + 'Train_Val_text.xlsx')
         train_dataset = ImageToImage2D(config.train_dataset, config.task_name, text, train_tf,
                                        image_size=image_size, unlabeled_image_stems=unlabeled_train_stems)
-        val_dataset = ImageToImage2D(config.val_dataset, config.task_name, text, val_tf,
-                                    image_size=image_size, unlabeled_image_stems=val_unlabeled_stems)
+        val_dataset   = ImageToImage2D(config.val_dataset,   config.task_name, text, val_tf,
+                                       image_size=image_size, unlabeled_image_stems=val_unlabeled_stems)
     elif str(config.task_name).startswith('BTRXD'):
         train_text = load_text_or_default(config.train_dataset, 'Train_text.xlsx')
-        val_text = load_text_or_default(config.val_dataset, 'Val_text.xlsx')
+        val_text   = load_text_or_default(config.val_dataset,   'Val_text.xlsx')
         train_dataset = ImageToImage2D(config.train_dataset, config.task_name, train_text, train_tf,
                                        image_size=image_size, unlabeled_image_stems=unlabeled_train_stems)
-        val_dataset = ImageToImage2D(config.val_dataset, config.task_name, val_text, val_tf,
-                                    image_size=image_size, unlabeled_image_stems=val_unlabeled_stems)
+        val_dataset   = ImageToImage2D(config.val_dataset,   config.task_name, val_text,   val_tf,
+                                       image_size=image_size, unlabeled_image_stems=val_unlabeled_stems)
     else:
         train_text = load_text_or_default(config.train_dataset, 'Train_text.xlsx')
-        val_text = load_text_or_default(config.val_dataset, 'Val_text.xlsx')
+        val_text   = load_text_or_default(config.val_dataset,   'Val_text.xlsx')
         train_dataset = ImageToImage2D(config.train_dataset, config.task_name, train_text, train_tf,
                                        image_size=image_size, unlabeled_image_stems=unlabeled_train_stems)
-        val_dataset = ImageToImage2D(config.val_dataset, config.task_name, val_text, val_tf,
-                                    image_size=image_size, unlabeled_image_stems=val_unlabeled_stems)
+        val_dataset   = ImageToImage2D(config.val_dataset,   config.task_name, val_text,   val_tf,
+                                       image_size=image_size, unlabeled_image_stems=val_unlabeled_stems)
 
-
-    # train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, worker_init_fn=worker_init_fn,
-    #                           num_workers=0, pin_memory=use_cuda)
-
-    # val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=True, worker_init_fn=worker_init_fn,
-    #                         num_workers=0, pin_memory=use_cuda)
-    
     _collate = dynamic_pad_collate if not config.resize_images else None
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, worker_init_fn=worker_init_fn,
-                            num_workers=0, pin_memory=use_cuda, collate_fn=_collate)
-
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=True, worker_init_fn=worker_init_fn,
-                            num_workers=0, pin_memory=use_cuda, collate_fn=_collate)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True,
+                              worker_init_fn=worker_init_fn, num_workers=0,
+                              pin_memory=use_cuda, collate_fn=_collate)
+    val_loader   = DataLoader(val_dataset,   batch_size=batch_size, shuffle=True,
+                              worker_init_fn=worker_init_fn, num_workers=0,
+                              pin_memory=use_cuda, collate_fn=_collate)
 
     lr = config.learning_rate
     logger.info(model_type)
 
-    # Optional THOP FLOPs/params (slow; run later for benchmarking if needed):
-    # from thop import profile
-    # model.eval()
-    # dummy_in = torch.randn(batch_size, 3, config.img_size, config.img_size, device=device)
-    # dummy_txt = torch.randn(batch_size, 10, 768, device=device)
-    # flops, params = profile(model, inputs=(dummy_in, dummy_txt))
-    # logger.info("THOP flops: %s, params: %s", flops, params)
-    # model.train(True)
-
     if torch.cuda.device_count() > 1 and use_cuda:
         logger.info("Using %d GPUs (DataParallel).", torch.cuda.device_count())
         model = nn.DataParallel(model)
+
     criterion = WeightedDiceBCE(dice_weight=0.5, BCE_weight=0.5)
-    optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=lr)  # Choose optimize
+    optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=lr)
+
     if config.cosineLR is True:
         lr_scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=1, eta_min=1e-4)
     else:
@@ -298,6 +274,7 @@ def main_loop(model, batch_size=config.batch_size, model_type='', tensorboard=Tr
             lr_scheduler.load_state_dict(scheduler_state)
             logger.info('Loaded scheduler state')
         logger.info('Current LR: %.6g', optimizer.param_groups[0]['lr'])
+
     if tensorboard:
         log_dir = config.tensorboard_folder
         logger.info("TensorBoard log dir: %s", log_dir)
@@ -307,30 +284,44 @@ def main_loop(model, batch_size=config.batch_size, model_type='', tensorboard=Tr
     else:
         writer = None
 
+    # ── FIX: khởi tạo scaler có điều kiện theo config.use_amp ────────────────
+    use_amp = getattr(config, 'use_amp', False)
+    scaler  = amp.GradScaler() if (use_amp and use_cuda) else None
+    if scaler is not None:
+        logger.info("AMP (FP16) enabled — GradScaler active.")
+    else:
+        logger.info("AMP disabled — training in FP32.")
+    # ─────────────────────────────────────────────────────────────────────────
+
     max_dice = float(resume_ckpt.get("best_dice", 0.0)) if resume_ckpt else 0.0
     best_epoch = int(resume_ckpt.get("best_epoch", max(0, start_epoch - 1))) if resume_ckpt else 1
     early_stopping_count = int(resume_ckpt.get("early_stopping_count", 0)) if resume_ckpt else 0
     logger.info("Save dir: %s", config.save_path)
-    for epoch in range(start_epoch, config.epochs):  # loop over the dataset multiple times
+
+    for epoch in range(start_epoch, config.epochs):
         logger.info('\n========= Epoch [{}/{}] ========='.format(epoch + 1, config.epochs))
         logger.info(config.session_name)
-        # train for one epoch
+
+        # ── Train ─────────────────────────────────────────────────────────────
         model.train(True)
         logger.info('Training with batch size : {}'.format(batch_size))
-        train_one_epoch(train_loader, model, criterion, optimizer, writer, epoch, None, model_type, logger)  # sup
+        # FIX: truyền scaler vào train loop
+        train_one_epoch(train_loader, model, criterion, optimizer, writer,
+                        epoch, None, model_type, logger, scaler=scaler)
 
-        # evaluate on validation set
+        # ── Validation (không dùng scaler — chỉ inference) ───────────────────
         logger.info('Validation')
         with torch.no_grad():
             model.eval()
             val_loss, val_dice = train_one_epoch(val_loader, model, criterion,
-                                                 optimizer, writer, epoch, lr_scheduler, model_type, logger)
-        # =============================================================
-        #       Save best model
-        # =============================================================
+                                                 optimizer, writer, epoch,
+                                                 lr_scheduler, model_type, logger,
+                                                 scaler=None)   # FIX: val không dùng AMP scaler
+
+        # ── Save best model ───────────────────────────────────────────────────
         if val_dice > max_dice - 1e-4:
-            logger.info(
-                '\t Saving best model, mean dice increased from: {:.4f} to {:.4f}'.format(max_dice, val_dice))
+            logger.info('\t Saving best model, mean dice increased from: {:.4f} to {:.4f}'.format(
+                max_dice, val_dice))
             max_dice = val_dice
             best_epoch = epoch + 1
             early_stopping_count = 0
@@ -349,14 +340,17 @@ def main_loop(model, batch_size=config.batch_size, model_type='', tensorboard=Tr
             'best_dice': max_dice,
             'early_stopping_count': early_stopping_count,
             'best_epoch': best_epoch,
+            # FIX: lưu scaler state để resume AMP đúng
+            'scaler_state_dict': scaler.state_dict() if scaler is not None else None,
         }
         save_checkpoint(state, config.model_path, "latest.pth.tar")
         if val_dice >= max_dice and early_stopping_count == 0:
             save_checkpoint(state, config.model_path, "best_model.pth.tar")
         if config.save_frequency > 0 and ((epoch + 1) % config.save_frequency == 0):
-            periodic_name = "epoch-{:04d}.pth.tar".format(epoch + 1)
-            save_checkpoint(state, config.model_path, periodic_name)
-        logger.info('\t early_stopping_count: {}/{}'.format(early_stopping_count, config.early_stopping_patience))
+            save_checkpoint(state, config.model_path, "epoch-{:04d}.pth.tar".format(epoch + 1))
+
+        logger.info('\t early_stopping_count: {}/{}'.format(
+            early_stopping_count, config.early_stopping_patience))
 
         if early_stopping_count > config.early_stopping_patience:
             logger.info('\t early_stopping!')
@@ -366,12 +360,11 @@ def main_loop(model, batch_size=config.batch_size, model_type='', tensorboard=Tr
 
 
 if __name__ == '__main__':
-    # Parse command line arguments
     parser = argparse.ArgumentParser(description='Train LViT model')
     parser.add_argument('--resume', action='store_true',
-                       help='Resume training from latest checkpoint')
+                        help='Resume training from latest checkpoint')
     parser.add_argument('--checkpoint', type=str, default=None,
-                       help='Path to specific checkpoint file to resume from')
+                        help='Path to specific checkpoint file to resume from')
     args = parser.parse_args()
 
     deterministic = True
@@ -381,12 +374,14 @@ if __name__ == '__main__':
     else:
         cudnn.benchmark = False
         cudnn.deterministic = True
+
     random.seed(config.seed)
     np.random.seed(config.seed)
     torch.manual_seed(config.seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed(config.seed)
         torch.cuda.manual_seed_all(config.seed)
+
     ckpt_path = None
     if args.resume or args.checkpoint:
         ckpt_path = find_latest_resume_checkpoint(args.checkpoint)
@@ -398,7 +393,6 @@ if __name__ == '__main__':
 
     logger = logger_config(log_path=config.logger_path)
 
-    # Build model
     config_vit = config.get_CTranS_config()
     logger.info('transformer head num: {}'.format(config_vit.transformer.num_heads))
     logger.info('transformer layers num: {}'.format(config_vit.transformer.num_layers))
@@ -406,18 +400,16 @@ if __name__ == '__main__':
 
     model_cls = EfficientLViT if config.use_efficient_lvit or config.model_name == 'EfficientLViT' else LViT_base
     if model_cls is EfficientLViT:
-        config.window_size = getattr(config, 'efficient_lvit_window_size', 7)
-        config.vit_depth = getattr(config, 'efficient_lvit_depth', 1)
-        config.vit_num_heads = getattr(config, 'efficient_lvit_num_heads', 4)
-        config.vit_key_dim = getattr(config, 'efficient_lvit_key_dim', 16)
+        config.window_size    = getattr(config, 'efficient_lvit_window_size', 7)
+        config.vit_depth      = getattr(config, 'efficient_lvit_depth', 1)
+        config.vit_num_heads  = getattr(config, 'efficient_lvit_num_heads', 4)
+        config.vit_key_dim    = getattr(config, 'efficient_lvit_key_dim', 16)
 
-    model = model_cls(config_vit, n_channels=config.n_channels, n_classes=config.n_labels)
-
+    model  = model_cls(config_vit, n_channels=config.n_channels, n_classes=config.n_labels)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logger.info('Using device: %s', str(device))
-    model = model.to(device)
+    model  = model.to(device)
 
-    # Resume from checkpoint if requested
     ckpt = None
     start_epoch = 0
     if ckpt_path is not None:
@@ -425,9 +417,8 @@ if __name__ == '__main__':
         if ckpt:
             start_epoch = int(ckpt.get('epoch', -1)) + 1
             logger.info('Resuming from epoch %d', start_epoch)
-            logger.info('Checkpoint loaded successfully. Continuing training...')
         else:
             logger.info('Starting fresh training (no valid checkpoint found)')
 
-    # Continue with normal training
-    model = main_loop(model, batch_size=config.batch_size, model_type=config.model_name, tensorboard=True, resume_ckpt=ckpt, start_epoch=start_epoch)
+    model = main_loop(model, batch_size=config.batch_size, model_type=config.model_name,
+                      tensorboard=True, resume_ckpt=ckpt, start_epoch=start_epoch)

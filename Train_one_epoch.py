@@ -8,14 +8,12 @@ import warnings
 from torchinfo import summary
 from sklearn.metrics.pairwise import cosine_similarity
 warnings.filterwarnings("ignore")
+import torch.cuda.amp as amp
 
 
 def print_summary(epoch, i, nb_batch, loss, loss_name, batch_time,
                   average_loss, average_time, iou, average_iou,
                   dice, average_dice, acc, average_acc, mode, lr, logger):
-    '''
-        mode = Train or Test
-    '''
     summary = '   [' + str(mode) + '] Epoch: [{0}][{1}/{2}]  '.format(
         epoch, i, nb_batch)
     string = ''
@@ -32,10 +30,8 @@ def print_summary(epoch, i, nb_batch, loss, loss_name, batch_time,
     logger.info(summary)
 
 
-##################################################################################
-#          Train One Epoch
-##################################################################################
-def train_one_epoch(loader, model, criterion, optimizer, writer, epoch, lr_scheduler, model_type, logger):
+def train_one_epoch(loader, model, criterion, optimizer, writer,
+                    epoch, lr_scheduler, model_type, logger, scaler=None):
     logging_mode = 'Train' if model.training else 'Val'
     device = next(model.parameters()).device
     accumulation_steps = max(1, int(getattr(config, "accumulation_steps", 1)))
@@ -43,55 +39,68 @@ def train_one_epoch(loader, model, criterion, optimizer, writer, epoch, lr_sched
     time_sum, loss_sum = 0, 0
     dice_sum, iou_sum = 0.0, 0.0
     dices = []
-
-    # FIX #9: khởi tạo trước để tránh UnboundLocalError khi loader rỗng
-    average_loss = 0.0
+    average_loss   = 0.0
     train_dice_avg = 0.0
 
     if model.training:
         optimizer.zero_grad()
 
     for i, (sampled_batch, names) in enumerate(loader, 1):
-
         try:
             loss_name = criterion._get_name()
         except AttributeError:
-            loss_name = criterion.__name__
+            loss_name = type(criterion).__name__
 
-        images, masks, text = sampled_batch['image'], sampled_batch['label'], sampled_batch['text']
+        images = sampled_batch['image'].to(device).float()
+        masks  = sampled_batch['label'].to(device).float()
+        text   = sampled_batch['text'].to(device).float()
 
-        # FIX: clamp text token count (BERT có thể trả nhiều hơn 10 tokens)
         if text.shape[1] > 10:
             text = text[:, :10, :]
 
-        images = images.float()
-        images, masks, text = images.to(device), masks.to(device), text.to(device)
+        labeled_mask = masks.sum(dim=(-2, -1)).view(-1) > 0
 
-        # ── Semi-supervised: bỏ qua loss trên các sample unlabeled (mask toàn 0)
-        # Phát hiện unlabeled: mask toàn zero → không đóng góp vào loss
-        labeled_mask = masks.sum(dim=(-2, -1)).view(-1) > 0   # (B,) True nếu có label thực
-        # Vẫn forward toàn batch để tận dụng batch norm statistics
-        preds = model(images, text)
-
-        if labeled_mask.any():
-            # Chỉ tính loss trên labeled samples
-            if labeled_mask.all():
-                out_loss = criterion(preds, masks.float())
+        with amp.autocast(enabled=(scaler is not None)):
+            preds = model(images, text)
+            if labeled_mask.any():
+                if labeled_mask.all():
+                    loss = criterion(preds, masks)
+                else:
+                    labeled_idx = labeled_mask.nonzero(as_tuple=True)[0]
+                    loss = criterion(preds[labeled_idx], masks[labeled_idx])
             else:
-                labeled_idx = labeled_mask.nonzero(as_tuple=True)[0]
-                out_loss = criterion(preds[labeled_idx], masks[labeled_idx].float())
+                continue  # skip toàn batch unlabeled
+
+        loss_val = loss.item()  # lưu trước khi chia accumulation
+
+        loss = loss / accumulation_steps
+        if scaler is not None:
+            scaler.scale(loss).backward()
         else:
-            # Toàn batch unlabeled → skip loss, chỉ log
-            out_loss = torch.tensor(0.0, device=device, requires_grad=True)
+            loss.backward()
 
-        if model.training:
-            (out_loss / accumulation_steps).backward()
-            if (i % accumulation_steps == 0) or (i == len(loader)):
+        if i % accumulation_steps == 0 or i == len(loader):
+            if scaler is not None:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.step()
-                optimizer.zero_grad()
+            optimizer.zero_grad()
 
-        train_dice = criterion._show_dice(preds.detach().clone(), masks.float().detach().clone())
-        train_iou  = iou_on_batch(masks, preds)
+        # Dice/IoU chỉ tính trên labeled samples
+        if labeled_mask.all():
+            train_dice = criterion._show_dice(
+                preds.detach().clone(), masks.float().detach().clone())
+            train_iou  = iou_on_batch(masks, preds)
+        else:
+            labeled_idx = labeled_mask.nonzero(as_tuple=True)[0]
+            train_dice  = criterion._show_dice(
+                preds[labeled_idx].detach().clone(),
+                masks[labeled_idx].float().detach().clone())
+            train_iou   = iou_on_batch(masks[labeled_idx], preds[labeled_idx])
 
         batch_time = time.time() - end
 
@@ -103,7 +112,7 @@ def train_one_epoch(loader, model, criterion, optimizer, writer, epoch, lr_sched
 
         dices.append(train_dice)
         time_sum  += len(images) * batch_time
-        loss_sum  += len(images) * out_loss.item()
+        loss_sum  += len(images) * loss_val
         iou_sum   += len(images) * train_iou
         dice_sum  += len(images) * train_dice
 
@@ -119,18 +128,18 @@ def train_one_epoch(loader, model, criterion, optimizer, writer, epoch, lr_sched
         train_dice_avg    = dice_sum / denom
 
         end = time.time()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
 
         if i % config.print_frequency == 0:
-            print_summary(epoch + 1, i, len(loader), out_loss.item(), loss_name, batch_time,
-                          average_loss, average_time, train_iou, train_iou_average,
+            print_summary(epoch + 1, i, len(loader), loss_val, loss_name,
+                          batch_time, average_loss, average_time,
+                          train_iou, train_iou_average,
                           train_dice, train_dice_avg, 0, 0, logging_mode,
-                          lr=min(g["lr"] for g in optimizer.param_groups), logger=logger)
+                          lr=min(g["lr"] for g in optimizer.param_groups),
+                          logger=logger)
 
         if config.tensorboard and writer is not None:
             step = epoch * len(loader) + i
-            writer.add_scalar(logging_mode + '_' + loss_name, out_loss.item(), step)
+            writer.add_scalar(logging_mode + '_' + loss_name, loss_val, step)
             writer.add_scalar(logging_mode + '_iou',  train_iou,  step)
             writer.add_scalar(logging_mode + '_dice', train_dice, step)
 
