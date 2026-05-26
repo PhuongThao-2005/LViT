@@ -101,6 +101,44 @@ def load_checkpoint(model, device, checkpoint_path):
 def worker_init_fn(worker_id):
     random.seed(config.seed + worker_id)
 
+def dynamic_pad_collate(batch):
+    """
+    Collate fn cho variable-size images (khi resize_images=False).
+    Pad tất cả ảnh/mask trong batch về cùng (max_H, max_W) bằng zero-padding.
+    Text tokens đã cùng size nên stack bình thường.
+    """
+    import torch.nn.functional as TF
+    samples = [b[0] for b in batch]
+    names   = [b[1] for b in batch]
+
+    images = [s['image'] for s in samples]   # list of Tensor (C, H_i, W_i)
+    labels = [s['label'] for s in samples]   # list of Tensor (H_i, W_i) hoặc (1, H_i, W_i)
+    texts  = [s['text']  for s in samples]   # list of Tensor (T, D) — same size
+
+    max_h = max(img.shape[1] for img in images)
+    max_w = max(img.shape[2] for img in images)
+
+    # pad (left=0, right=pad_w, top=0, bottom=pad_h) — F.pad dùng thứ tự ngược: (W_right, W_left, H_bottom, H_top)
+    images_pad = torch.stack([
+        TF.pad(img, (0, max_w - img.shape[2], 0, max_h - img.shape[1]))
+        for img in images
+    ])
+
+    labels_pad = []
+    for lbl in labels:
+        if lbl.dim() == 2:                          # (H, W)
+            lbl_p = TF.pad(lbl.unsqueeze(0).float(),
+                           (0, max_w - lbl.shape[1], 0, max_h - lbl.shape[0]))
+            labels_pad.append(lbl_p.squeeze(0).long())
+        else:                                        # (1, H, W) hoặc (C, H, W)
+            lbl_p = TF.pad(lbl.float(),
+                           (0, max_w - lbl.shape[2], 0, max_h - lbl.shape[1]))
+            labels_pad.append(lbl_p.long())
+    labels_pad = torch.stack(labels_pad)
+
+    texts_pad = torch.stack(texts)
+    return {'image': images_pad, 'label': labels_pad, 'text': texts_pad}, names
+
 
 def load_text_or_default(dataset_dir, text_filename):
     text_path = os.path.join(dataset_dir, text_filename)
@@ -214,11 +252,19 @@ def main_loop(model, batch_size=config.batch_size, model_type='', tensorboard=Tr
                                     image_size=image_size, unlabeled_image_stems=val_unlabeled_stems)
 
 
+    # train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, worker_init_fn=worker_init_fn,
+    #                           num_workers=0, pin_memory=use_cuda)
+
+    # val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=True, worker_init_fn=worker_init_fn,
+    #                         num_workers=0, pin_memory=use_cuda)
+    
+    _collate = dynamic_pad_collate if not config.resize_images else None
+
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, worker_init_fn=worker_init_fn,
-                              num_workers=0, pin_memory=use_cuda)
+                            num_workers=0, pin_memory=use_cuda, collate_fn=_collate)
 
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=True, worker_init_fn=worker_init_fn,
-                            num_workers=0, pin_memory=use_cuda)
+                            num_workers=0, pin_memory=use_cuda, collate_fn=_collate)
 
     lr = config.learning_rate
     logger.info(model_type)
