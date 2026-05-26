@@ -25,21 +25,15 @@ def print_summary(epoch, i, nb_batch, loss, loss_name, batch_time,
     string += '(Avg {:.4f}) '.format(average_iou)
     string += 'Dice:{:.4f} '.format(dice)
     string += '(Avg {:.4f}) '.format(average_dice)
-    # string += 'Acc:{:.3f} '.format(acc)
-    # string += '(Avg {:.4f}) '.format(average_acc)
     if mode == 'Train':
         string += 'LR {:.2e}   '.format(lr)
-    # string += 'Time {:.1f} '.format(batch_time)
     string += '(AvgTime {:.1f})   '.format(average_time)
     summary += string
     logger.info(summary)
-    # print summary
 
 
 ##################################################################################
-#=================================================================================
 #          Train One Epoch
-#=================================================================================
 ##################################################################################
 def train_one_epoch(loader, model, criterion, optimizer, writer, epoch, lr_scheduler, model_type, logger):
     logging_mode = 'Train' if model.training else 'Val'
@@ -47,10 +41,16 @@ def train_one_epoch(loader, model, criterion, optimizer, writer, epoch, lr_sched
     accumulation_steps = max(1, int(getattr(config, "accumulation_steps", 1)))
     end = time.time()
     time_sum, loss_sum = 0, 0
-    dice_sum, iou_sum, acc_sum = 0.0, 0.0, 0.0
+    dice_sum, iou_sum = 0.0, 0.0
     dices = []
+
+    # FIX #9: khởi tạo trước để tránh UnboundLocalError khi loader rỗng
+    average_loss = 0.0
+    train_dice_avg = 0.0
+
     if model.training:
         optimizer.zero_grad()
+
     for i, (sampled_batch, names) in enumerate(loader, 1):
 
         try:
@@ -58,22 +58,31 @@ def train_one_epoch(loader, model, criterion, optimizer, writer, epoch, lr_sched
         except AttributeError:
             loss_name = criterion.__name__
 
-        # Move data to the same device as the model (GPU or CPU).
         images, masks, text = sampled_batch['image'], sampled_batch['label'], sampled_batch['text']
+
+        # FIX: clamp text token count (BERT có thể trả nhiều hơn 10 tokens)
         if text.shape[1] > 10:
-            text = text[ :, :10, :]
-        
+            text = text[:, :10, :]
+
+        images = images.float()
         images, masks, text = images.to(device), masks.to(device), text.to(device)
 
-
-        # ====================================================
-        #             Compute loss
-        # ====================================================
-
+        # ── Semi-supervised: bỏ qua loss trên các sample unlabeled (mask toàn 0)
+        # Phát hiện unlabeled: mask toàn zero → không đóng góp vào loss
+        labeled_mask = masks.sum(dim=(-2, -1)).squeeze() > 0   # (B,) True nếu có label thực
+        # Vẫn forward toàn batch để tận dụng batch norm statistics
         preds = model(images, text)
-        out_loss = criterion(preds, masks.float())  # Loss
-        # print(model.training)
 
+        if labeled_mask.any():
+            # Chỉ tính loss trên labeled samples
+            if labeled_mask.all():
+                out_loss = criterion(preds, masks.float())
+            else:
+                labeled_idx = labeled_mask.nonzero(as_tuple=True)[0]
+                out_loss = criterion(preds[labeled_idx], masks[labeled_idx].float())
+        else:
+            # Toàn batch unlabeled → skip loss, chỉ log
+            out_loss = torch.tensor(0.0, device=device, requires_grad=True)
 
         if model.training:
             (out_loss / accumulation_steps).backward()
@@ -81,53 +90,48 @@ def train_one_epoch(loader, model, criterion, optimizer, writer, epoch, lr_sched
                 optimizer.step()
                 optimizer.zero_grad()
 
-        train_dice = criterion._show_dice(preds, masks.float())
-        train_iou = iou_on_batch(masks,preds)
+        train_dice = criterion._show_dice(preds.detach().clone(), masks.float().detach().clone())
+        train_iou  = iou_on_batch(masks, preds)
 
         batch_time = time.time() - end
+
         if epoch % config.vis_frequency == 0 and logging_mode == 'Val':
-            vis_path = config.visualize_path+str(epoch)+'/'
+            vis_path = config.visualize_path + str(epoch) + '/'
             if not os.path.isdir(vis_path):
                 os.makedirs(vis_path)
-            save_on_batch(images,masks,preds,names,vis_path)
-        dices.append(train_dice)
+            save_on_batch(images, masks, preds, names, vis_path)
 
-        time_sum += len(images) * batch_time
-        loss_sum += len(images) * out_loss
-        iou_sum += len(images) * train_iou
-        # acc_sum += len(images) * train_acc
-        dice_sum += len(images) * train_dice
+        dices.append(train_dice)
+        time_sum  += len(images) * batch_time
+        loss_sum  += len(images) * out_loss.item()
+        iou_sum   += len(images) * train_iou
+        dice_sum  += len(images) * train_dice
 
         if i == len(loader):
-            average_loss = loss_sum / (config.batch_size*(i-1) + len(images))
-            average_time = time_sum / (config.batch_size*(i-1) + len(images))
-            train_iou_average = iou_sum / (config.batch_size*(i-1) + len(images))
-            # train_acc_average = acc_sum / (config.batch_size*(i-1) + len(images))
-            train_dice_avg = dice_sum / (config.batch_size*(i-1) + len(images))
+            denom = config.batch_size * (i - 1) + len(images)
         else:
-            average_loss = loss_sum / (i * config.batch_size)
-            average_time = time_sum / (i * config.batch_size)
-            train_iou_average = iou_sum / (i * config.batch_size)
-            # train_acc_average = acc_sum / (i * config.batch_size)
-            train_dice_avg = dice_sum / (i * config.batch_size)
+            denom = i * config.batch_size
+        denom = max(denom, 1)
+
+        average_loss      = loss_sum / denom
+        average_time      = time_sum / denom
+        train_iou_average = iou_sum  / denom
+        train_dice_avg    = dice_sum / denom
 
         end = time.time()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
         if i % config.print_frequency == 0:
-            print_summary(epoch + 1, i, len(loader), out_loss, loss_name, batch_time,
+            print_summary(epoch + 1, i, len(loader), out_loss.item(), loss_name, batch_time,
                           average_loss, average_time, train_iou, train_iou_average,
-                          train_dice, train_dice_avg, 0, 0,  logging_mode,
-                          lr=min(g["lr"] for g in optimizer.param_groups),logger=logger)
+                          train_dice, train_dice_avg, 0, 0, logging_mode,
+                          lr=min(g["lr"] for g in optimizer.param_groups), logger=logger)
 
-        if config.tensorboard:
+        if config.tensorboard and writer is not None:
             step = epoch * len(loader) + i
             writer.add_scalar(logging_mode + '_' + loss_name, out_loss.item(), step)
-
-            # plot metrics in tensorboard
-            writer.add_scalar(logging_mode + '_iou', train_iou, step)
-            # writer.add_scalar(logging_mode + '_acc', train_acc, step)
+            writer.add_scalar(logging_mode + '_iou',  train_iou,  step)
             writer.add_scalar(logging_mode + '_dice', train_dice, step)
 
         if torch.cuda.is_available():
