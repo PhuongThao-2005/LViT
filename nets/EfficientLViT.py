@@ -160,7 +160,7 @@ class LViT(nn.Module):
         self.up1 = UpblockAttention(C * 2,  C,     nb_Conv=2)
 
         self.outc = nn.Conv2d(C, n_classes, kernel_size=(1, 1), stride=(1, 1))
-        self.last_activation  = nn.Sigmoid()   # for BCELoss
+        # self.last_activation  = nn.Sigmoid()   # for BCELoss
         self.multi_activation = nn.Softmax(dim=1)  # for CrossEntropyLoss
 
         # ── Reconstruct heads ──────────────────────────────────────────────
@@ -247,7 +247,8 @@ class LViT(nn.Module):
 
         # ── output ────────────────────────────────────────────────────────
         if self.n_classes == 1:
-            logits = self.last_activation(self.outc(x))
+            # logits = self.last_activation(self.outc(x))
+            logits = self.outc(x)   # bỏ self.last_activation — BCEWithLogits tự lo
         else:
             logits = self.outc(x)
         return logits
