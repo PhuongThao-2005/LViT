@@ -27,7 +27,7 @@ class WeightedBCE(nn.Module):
         logit = logit_pixel.view(-1)
         truth = truth_pixel.view(-1)
         assert (logit.shape == truth.shape)
-        loss = F.binary_cross_entropy(logit, truth, reduction='none')
+        loss = F.binary_cross_entropy(logit.float(), truth.float(), reduction='none')
         pos = (truth > 0.5).float()
         neg = (truth < 0.5).float()
         pos_weight = pos.sum().item() + 1e-12

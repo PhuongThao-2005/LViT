@@ -1,6 +1,9 @@
 # -*- coding: utf-8 -*-
+import torch
 import torch.optim
 import torch.nn as nn
+import torch.nn.functional as F
+from torch.cuda.amp import autocast, GradScaler
 from tensorboardX import SummaryWriter
 import os
 import numpy as np
@@ -39,6 +42,26 @@ def logger_config(log_path):
     # Avoid duplicate lines in notebooks (root logger often has its own handler).
     logger.propagate = False
     return logger
+
+
+def pad_collate_fn(batch):
+    samples, names = zip(*batch)
+    images = [sample['image'] for sample in samples]
+    masks = [sample['label'] for sample in samples]
+    texts = [sample['text'] for sample in samples]
+    max_h = max(img.shape[1] for img in images)
+    max_w = max(img.shape[2] for img in images)
+    padded_images = []
+    padded_masks = []
+    for img, mask in zip(images, masks):
+        pad_h = max_h - img.shape[1]
+        pad_w = max_w - img.shape[2]
+        padded_images.append(F.pad(img, (0, pad_w, 0, pad_h), value=0))
+        padded_masks.append(F.pad(mask, (0, pad_w, 0, pad_h), value=0))
+    images_batch = torch.stack(padded_images, dim=0)
+    masks_batch = torch.stack(padded_masks, dim=0)
+    texts_batch = torch.stack(texts, dim=0)
+    return {'image': images_batch, 'label': masks_batch, 'text': texts_batch}, names
 
 
 def save_checkpoint(state, save_path, filename):
@@ -214,11 +237,19 @@ def main_loop(model, batch_size=config.batch_size, model_type='', tensorboard=Tr
                                     image_size=image_size, unlabeled_image_stems=val_unlabeled_stems)
 
 
+    collate_fn = pad_collate_fn if not config.resize_images else None
+    if not config.resize_images and batch_size > 1:
+        logger.warning(
+            'resize_images=False with batch_size=%d may OOM on large images. Switching batch_size to 1.',
+            batch_size,
+        )
+        batch_size = 1
+
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, worker_init_fn=worker_init_fn,
-                              num_workers=0, pin_memory=use_cuda)
+                              num_workers=0, pin_memory=use_cuda, collate_fn=collate_fn)
 
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=True, worker_init_fn=worker_init_fn,
-                            num_workers=0, pin_memory=use_cuda)
+                            num_workers=0, pin_memory=use_cuda, collate_fn=collate_fn)
 
     lr = config.learning_rate
     logger.info(model_type)
@@ -261,6 +292,10 @@ def main_loop(model, batch_size=config.batch_size, model_type='', tensorboard=Tr
     else:
         writer = None
 
+    # Initialize GradScaler for AMP
+    scaler = GradScaler() if use_cuda else None
+    logger.info("AMP enabled: %s", use_cuda)
+
     max_dice = float(resume_ckpt.get("best_dice", 0.0)) if resume_ckpt else 0.0
     best_epoch = int(resume_ckpt.get("best_epoch", max(0, start_epoch - 1))) if resume_ckpt else 1
     early_stopping_count = int(resume_ckpt.get("early_stopping_count", 0)) if resume_ckpt else 0
@@ -271,14 +306,14 @@ def main_loop(model, batch_size=config.batch_size, model_type='', tensorboard=Tr
         # train for one epoch
         model.train(True)
         logger.info('Training with batch size : {}'.format(batch_size))
-        train_one_epoch(train_loader, model, criterion, optimizer, writer, epoch, None, model_type, logger)  # sup
+        train_one_epoch(train_loader, model, criterion, optimizer, writer, epoch, None, model_type, logger, scaler=scaler)  # sup
 
         # evaluate on validation set
         logger.info('Validation')
         with torch.no_grad():
             model.eval()
             val_loss, val_dice = train_one_epoch(val_loader, model, criterion,
-                                                 optimizer, writer, epoch, lr_scheduler, model_type, logger)
+                                                 optimizer, writer, epoch, lr_scheduler, model_type, logger, scaler=scaler)
         # =============================================================
         #       Save best model
         # =============================================================

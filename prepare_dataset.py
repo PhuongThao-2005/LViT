@@ -55,6 +55,7 @@ from tqdm import tqdm
 from collections import defaultdict
 import warnings
 warnings.filterwarnings("ignore")
+warnings.filterwarnings('ignore', message='.*iCCP.*')
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -459,7 +460,7 @@ def _verify_sample(out_dir: str, train_df: pd.DataFrame, img_size: int):
 
     ok = True
     if os.path.exists(img_path):
-        img = Image.open(img_path)
+        img = Image.open(img_path).convert("RGB")
         assert img.size == (img_size, img_size), f"Ảnh sai size: {img.size}"
         assert img.mode == "RGB", f"Ảnh sai mode: {img.mode}"
         print(f"  [OK] img sample    : {sample_id}  size={img.size}  mode={img.mode}")
@@ -468,7 +469,7 @@ def _verify_sample(out_dir: str, train_df: pd.DataFrame, img_size: int):
         ok = False
 
     if os.path.exists(mask_path):
-        mask = Image.open(mask_path)
+        mask = Image.open(mask_path).convert("L")
         arr  = np.array(mask)
         assert mask.size == (img_size, img_size), f"Mask sai size: {mask.size}"
         uniq = np.unique(arr).tolist()

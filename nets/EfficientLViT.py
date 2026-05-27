@@ -184,6 +184,7 @@ class LViT(nn.Module):
         """
         x = x.float()
         x1 = self.inc(x)       # (B, C,   H,    W)
+        H, W = x1.shape[2], x1.shape[3]
 
         # ── text channel projections ────────────────────────────────────────
         text4 = self.text_module4(text.transpose(1, 2)).transpose(1, 2)   # (B,T,C*8)
@@ -200,6 +201,11 @@ class LViT(nn.Module):
         y4 = self.downVit3(x4, y3, text4)           # (B, N4, C*8)
         x5 = self.down4(x4)                         # (B, C*8, H/16, W/16)
 
+        hw1 = self.downVit ._last_hw   
+        hw2 = self.downVit1._last_hw
+        hw3 = self.downVit2._last_hw
+        hw4 = self.downVit3._last_hw
+
         # ── ViT up path / reconstruct ───────────────────────────────────────
         y4 = self.upVit3(y4, y4,  text4, reconstruct=True)
         y3 = self.upVit2(y3, y4,  text3, reconstruct=True)
@@ -207,10 +213,10 @@ class LViT(nn.Module):
         y1 = self.upVit (y1, y2,  text1, reconstruct=True)
 
         # ── seq → spatial, residual add ─────────────────────────────────────
-        x1 = self.reconstruct1(y1) + x1
-        x2 = self.reconstruct2(y2) + x2
-        x3 = self.reconstruct3(y3) + x3
-        x4 = self.reconstruct4(y4) + x4
+        x1 = self.reconstruct1(y1, hw=hw1) + x1
+        x2 = self.reconstruct2(y2, hw=hw2) + x2
+        x3 = self.reconstruct3(y3, hw=hw3) + x3
+        x4 = self.reconstruct4(y4, hw=hw4) + x4
 
         # ── CNN decoder ──────────────────────────────────────────────────────
         x = self.up4(x5, x4)

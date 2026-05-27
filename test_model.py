@@ -52,8 +52,7 @@ def vis_and_save_heatmap(model, input_img, text, img_RGB, labs, vis_save_path, m
     output = model(input_img.cuda(), text.cuda())
     pred_class = torch.where(output > 0.5, torch.ones_like(output), torch.zeros_like(output))
     predict_save = pred_class[0].cpu().data.numpy()
-    if predict_save.ndim == 3 and predict_save.shape[0] == 1:
-        predict_save = predict_save[0]
+    predict_save = np.squeeze(predict_save)
     dice_pred_tmp, iou_tmp = show_image_with_dice(predict_save, labs,
                                                   save_path=vis_save_path + '_predict_' + model_type + '.jpg')
     return dice_pred_tmp, iou_tmp

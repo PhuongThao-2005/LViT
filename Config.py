@@ -18,7 +18,7 @@ n_labels = 1
 
 epochs = 200
 
-img_size = 224
+img_size = 1024
 resize_images = False  # set False to use original image resolution (best with EfficientLViT)
 
 print_frequency = 50

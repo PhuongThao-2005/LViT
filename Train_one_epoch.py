@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
+import torch
 import torch.optim
+from torch.cuda.amp import autocast
 import os
 import time
 from utils import *
@@ -41,7 +43,7 @@ def print_summary(epoch, i, nb_batch, loss, loss_name, batch_time,
 #          Train One Epoch
 #=================================================================================
 ##################################################################################
-def train_one_epoch(loader, model, criterion, optimizer, writer, epoch, lr_scheduler, model_type, logger):
+def train_one_epoch(loader, model, criterion, optimizer, writer, epoch, lr_scheduler, model_type, logger, scaler=None):
     logging_mode = 'Train' if model.training else 'Val'
     device = next(model.parameters()).device
     accumulation_steps = max(1, int(getattr(config, "accumulation_steps", 1)))
@@ -70,16 +72,27 @@ def train_one_epoch(loader, model, criterion, optimizer, writer, epoch, lr_sched
         #             Compute loss
         # ====================================================
 
-        preds = model(images, text)
-        out_loss = criterion(preds, masks.float())  # Loss
-        # print(model.training)
-
-
-        if model.training:
-            (out_loss / accumulation_steps).backward()
+        if model.training and scaler is not None:
+            # Use AMP (Automatic Mixed Precision) for training
+            with autocast():
+                preds = model(images, text)
+                out_loss = criterion(preds, masks.float())  # Loss
+            
+            scaler.scale(out_loss / accumulation_steps).backward()
             if (i % accumulation_steps == 0) or (i == len(loader)):
-                optimizer.step()
+                scaler.step(optimizer)
+                scaler.update()
                 optimizer.zero_grad()
+        else:
+            # Standard training without AMP
+            preds = model(images, text)
+            out_loss = criterion(preds, masks.float())  # Loss
+
+            if model.training:
+                (out_loss / accumulation_steps).backward()
+                if (i % accumulation_steps == 0) or (i == len(loader)):
+                    optimizer.step()
+                    optimizer.zero_grad()
 
         train_dice = criterion._show_dice(preds, masks.float())
         train_iou = iou_on_batch(masks,preds)

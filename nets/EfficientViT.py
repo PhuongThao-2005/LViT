@@ -17,6 +17,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import itertools
 import numpy as np
+import torch.utils.checkpoint as ckpt
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -322,12 +323,13 @@ class EfficientViTBranch(nn.Module):
                  depth=1, num_heads=4, key_dim=16,
                  window_size=7, text_dim=64,
                  finest_scale=False, is_bottleneck=False,
-                 skip_in_dim=None):
+                 skip_in_dim=None, use_checkpoint=False):
         super().__init__()
         self.embed_dim    = embed_dim
         self.patch_size   = patch_size
         self.finest_scale = finest_scale
         self.is_bottleneck = is_bottleneck
+        self.use_checkpoint = use_checkpoint
 
         # ── patch embed ───────────────────────────────────────────────────
         self.patch_embed = EfficientPatchEmbed(in_channels, embed_dim, patch_size)
@@ -357,6 +359,11 @@ class EfficientViTBranch(nn.Module):
 
         self.norm = nn.LayerNorm(embed_dim)
 
+    def _run_blocks(self, feat):
+        if self.use_checkpoint and self.training:
+            return ckpt.checkpoint_sequential(self.blocks, len(self.blocks), feat)
+        return self.blocks(feat)
+    
     # ── shape helpers ─────────────────────────────────────────────────────
     @staticmethod
     def to_seq(feat):
@@ -380,13 +387,13 @@ class EfficientViTBranch(nn.Module):
         if not reconstruct:
             # ── Down path ─────────────────────────────────────────────
             feat = self.patch_embed(x)            # (B, embed_dim, H', W')
-            _, _, H, W = feat.shape
-
+            B, C, H, W = feat.shape
+            self._last_hw = (H, W)  
             # text injection at finest scale only (matches original LViT)
             if self.text_proj is not None:
                 feat = feat + self.text_proj(text, H, W)
 
-            feat = self.blocks(feat)              # (B, embed_dim, H', W')
+            feat = self._run_blocks(feat)              # (B, embed_dim, H', W')
 
             # finest scale (downVit) or bottleneck → return tokens directly
             if self.finest_scale or self.is_bottleneck:
@@ -397,13 +404,20 @@ class EfficientViTBranch(nn.Module):
             # mirrors: CTBN(x) → cat([x_half, skip_x]) in original Vit.py
             feat_half = self.chan_half(feat)      # (B, embed_dim//2, H', W')
             seq_half, _, _ = self.to_seq(feat_half)
+
+            if skip_x.shape[1] != seq_half.shape[1]:
+                sk_sp = self.to_spatial(skip_x, *self._get_hw(skip_x))
+                sk_sp = F.interpolate(sk_sp, size=(H, W),
+                                      mode='bilinear', align_corners=False)
+                skip_x, _, _ = self.to_seq(sk_sp)
+
             merged = torch.cat([seq_half, skip_x], dim=2)  # (B, N, embed_dim)
             return self.norm(merged)
 
         else:
             # ── Reconstruct / Up path ─────────────────────────────────
             # mirrors: Encoder_blocks(x)  +  CTBN2(skip_x)  →  x + skip
-            h, w = self._hw(x)
+            h, w = self._last_hw if hasattr(self, '_last_hw') else self._hw(x)
             x_sp = self.blocks(self.to_spatial(x, h, w))  # (B, C, h, w)
             x, _, _ = self.to_seq(x_sp)                   # (B, N, embed_dim)
 
@@ -412,13 +426,20 @@ class EfficientViTBranch(nn.Module):
                 skip = self.skip_proj(skip)
             # align token count if deeper level has different resolution
             if skip.shape[1] != x.shape[1]:
-                sk_sp = self.to_spatial(skip, *self._hw(skip))
+                skip_h, skip_w = self._get_hw(skip_x)
+                sk_sp = self.to_spatial(skip, skip_h, skip_w)
                 sk_sp = F.interpolate(sk_sp, size=(h, w),
                                       mode='bilinear', align_corners=False)
                 skip, _, _ = self.to_seq(sk_sp)
 
             return self.norm(x + skip)            # (B, N, embed_dim)
 
+    @staticmethod
+    def _get_hw(seq):
+        """Lấy H,W từ _last_hw nếu có, không thì fallback sqrt."""
+        N = seq.size(1)
+        s = int(N ** 0.5)
+        return s, s   # chỉ dùng khi không có _last_hw
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Reconstruct  (identical to original Vit.py)
@@ -434,16 +455,17 @@ class Reconstruct(nn.Module):
         self.activation = nn.ReLU(inplace=True)
         self.scale_factor = scale_factor
 
-    def forward(self, x):
+    def forward(self, x, hw=None):
         if x is None:
             return None
         B, n_patch, hidden = x.size()
-        h, w = int(np.sqrt(n_patch)), int(np.sqrt(n_patch))
-        x = x.permute(0, 2, 1)
-        x = x.contiguous().view(B, hidden, h, w)
+        if hw is not None:
+            h, w = hw
+        else:
+            h = w = int(np.sqrt(n_patch))
+        x = x.permute(0, 2, 1).contiguous().view(B, hidden, h, w)
         x = F.interpolate(x, scale_factor=self.scale_factor,
                           mode='bilinear', align_corners=False)
         out = self.conv(x)
         out = self.norm(out)
-        out = self.activation(out)
-        return out
+        return self.activation(out)
