@@ -66,8 +66,12 @@ class UpblockAttention(nn.Module):
 
     def forward(self, x, skip_x):
         up = self.up(x)
+        # Align upsample output về đúng kích thước skip_x (fix MaxPool2d odd-dim floor)
+        if up.shape[2:] != skip_x.shape[2:]:
+            up = F.interpolate(up, size=skip_x.shape[2:],
+                            mode='bilinear', align_corners=False)
         skip_x_att = self.pixModule(skip_x)
-        x = torch.cat([skip_x_att, up], dim=1)  # dim 1 is the channel dimension
+        x = torch.cat([skip_x_att, up], dim=1)
         return self.nConvs(x)
 
 
@@ -157,7 +161,7 @@ class LViT(nn.Module):
 
         self.outc = nn.Conv2d(C, n_classes, kernel_size=(1, 1), stride=(1, 1))
         self.last_activation  = nn.Sigmoid()   # for BCELoss
-        self.multi_activation = nn.Softmax()
+        self.multi_activation = nn.Softmax(dim=1)  # for CrossEntropyLoss
 
         # ── Reconstruct heads ──────────────────────────────────────────────
         self.reconstruct1 = Reconstruct(in_channels=C,     out_channels=C,     kernel_size=1, scale_factor=(16, 16))
@@ -213,7 +217,7 @@ class LViT(nn.Module):
         # x4 = self.reconstruct4(y4) + x4
 
         # ── Down path — lưu H,W thực tế ──────────────────────────────────────
-        y1, H1, W1 = self.downVit (x1, x1, text1)   # H1 = H/16,  W1 = W/16
+        y1, H1, W1 = self.downVit (x1, None, text1)   # H1 = H/16,  W1 = W/16
         x2 = self.down1(x1)
         y2, H2, W2 = self.downVit1(x2, y1, text2)   # H2 = H/8,   W2 = W/8
         x3 = self.down2(x2)
@@ -224,15 +228,16 @@ class LViT(nn.Module):
 
         # ── Up path — truyền H,W thực vào reconstruct ────────────────────────
         y4, _, _ = self.upVit3(y4, y4, text4, reconstruct=True, hw=(H4, W4))
-        y3, _, _ = self.upVit2(y3, y4, text3, reconstruct=True, hw=(H3, W3))
-        y2, _, _ = self.upVit1(y2, y3, text2, reconstruct=True, hw=(H2, W2))
-        y1, _, _ = self.upVit (y1, y2, text1, reconstruct=True, hw=(H1, W1))
+        y3, _, _ = self.upVit2(y3, y4, text3, reconstruct=True, hw=(H3, W3), hw_skip=(H4, W4))
+        y2, _, _ = self.upVit1(y2, y3, text2, reconstruct=True, hw=(H2, W2), hw_skip=(H3, W3))
+        y1, _, _ = self.upVit (y1, y2, text1, reconstruct=True, hw=(H1, W1), hw_skip=(H2, W2))
 
         # ── seq → spatial với H,W đúng ───────────────────────────────────────
-        x1 = self.reconstruct1(y1, h=H1, w=W1) + x1
-        x2 = self.reconstruct2(y2, h=H2, w=W2) + x2
-        x3 = self.reconstruct3(y3, h=H3, w=W3) + x3
-        x4 = self.reconstruct4(y4, h=H4, w=W4) + x4
+        # target_h/w lấy trực tiếp từ CNN tensor — không đoán, không nhân scale_factor
+        x1 = self.reconstruct1(y1, h=H1, w=W1, target_h=x1.shape[2], target_w=x1.shape[3]) + x1
+        x2 = self.reconstruct2(y2, h=H2, w=W2, target_h=x2.shape[2], target_w=x2.shape[3]) + x2
+        x3 = self.reconstruct3(y3, h=H3, w=W3, target_h=x3.shape[2], target_w=x3.shape[3]) + x3
+        x4 = self.reconstruct4(y4, h=H4, w=W4, target_h=x4.shape[2], target_w=x4.shape[3]) + x4
 
         # ── CNN decoder ──────────────────────────────────────────────────────
         x = self.up4(x5, x4)

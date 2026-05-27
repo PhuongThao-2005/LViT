@@ -136,7 +136,20 @@ class CascadedGroupAttention(nn.Module):
 
     def forward(self, x):  # x: (B, C, H, W)
         B, C, H, W = x.shape
-        ab = self.attention_biases[:, self.attention_bias_idxs]
+        N = H * W
+        wr_sq = self.attention_bias_idxs.shape[0]  # = window_resolution * window_resolution
+        # Khi đi qua LocalWindowAttention, N luôn = wr² (window đã partition đúng kích thước)
+        # Nhánh else chỉ xảy ra khi ảnh nhỏ hơn window (H*W < wr²), gọi trực tiếp từ LocalWindowAttention
+        if N == wr_sq:
+            ab = self.attention_biases[:, self.attention_bias_idxs]
+        else:
+            ab_full = self.attention_biases[:, self.attention_bias_idxs]  # (heads, wr_sq, wr_sq)
+            ab = F.interpolate(
+                ab_full.unsqueeze(0),
+                size=(N, N),
+                mode='bilinear', align_corners=False
+            ).squeeze(0)
+
         feats_in  = x.chunk(self.num_heads, dim=1)
         feats_out = []
         feat = feats_in[0]
@@ -371,12 +384,16 @@ class EfficientViTBranch(nn.Module):
 
     @staticmethod
     def _hw(seq):
-        N = seq.size(1)
-        h = w = int(N ** 0.5)
-        return h, w
+        raise RuntimeError(
+            "_hw() assumes square images — use explicit hw=(H,W) instead. "
+            "Pass hw through EfficientViTBranch.forward(hw=...) or EfficientLViT down path."
+        )
 
     # ── forward ───────────────────────────────────────────────────────────
-    def forward(self, x, skip_x, text, reconstruct=False, hw=None):
+    def forward(self, x, skip_x, text, reconstruct=False, hw=None, hw_skip=None):
+        if hw_skip is not None:
+            self._last_skip_hw = hw_skip  # store for later use if needed
+
         if not reconstruct:
             # ── Down path ─────────────────────────────────────────────
             feat = self.patch_embed(x)            # (B, embed_dim, H', W')
@@ -394,10 +411,31 @@ class EfficientViTBranch(nn.Module):
                 return self.norm(seq), H, W             # (B, N, embed_dim); add H, W for skip merge in up path
 
             # other scales: halve channels, cat with previous skip (seq)
-            # mirrors: CTBN(x) → cat([x_half, skip_x]) in original Vit.py
-            feat_half = self.chan_half(feat)      # (B, embed_dim//2, H', W')
-            seq_half, _, _ = self.to_seq(feat_half)
-            merged = torch.cat([seq_half, skip_x], dim=2)  # (B, N, embed_dim)
+            feat_half = self.chan_half(feat)           # (B, embed_dim//2, H', W')
+            seq_half, _, _ = self.to_seq(feat_half)   # (B, N, embed_dim//2)
+
+            if skip_x is not None:
+                if skip_x.shape[1] != seq_half.shape[1]:
+                    C_prev = skip_x.shape[2]
+                    hw_skip_val = getattr(self, '_last_skip_hw', None)
+                    if hw_skip_val is not None:
+                        h_sk, w_sk = hw_skip_val
+                    else:
+                        h_sk = w_sk = int(skip_x.shape[1] ** 0.5)
+                    sk_sp = self.to_spatial(skip_x, h_sk, w_sk)
+                    sk_sp = F.interpolate(sk_sp, size=(H, W), mode='bilinear', align_corners=False)
+                    skip_x, _, _ = self.to_seq(sk_sp)
+
+                assert skip_x.shape[2] == self.embed_dim // 2, (
+                    f"skip_x channel dim {skip_x.shape[2]} ≠ embed_dim//2 {self.embed_dim // 2}. "
+                    f"Check EfficientLViT.py wiring: skip_x phải là output của downVit scale liền trước, "
+                    f"có dim = embed_dim//2 = {self.embed_dim // 2}."
+                )
+                merged = torch.cat([seq_half, skip_x], dim=2)  # (B, N, embed_dim//2 + C_prev)
+            else:
+                zeros = torch.zeros(seq_half.shape[0], seq_half.shape[1],
+                                    self.embed_dim // 2, device=seq_half.device, dtype=seq_half.dtype)
+                merged = torch.cat([seq_half, zeros], dim=2)
             return self.norm(merged), H, W
 
         else:
@@ -417,10 +455,19 @@ class EfficientViTBranch(nn.Module):
                 skip = self.skip_proj(skip)
             # align token count if deeper level has different resolution
             if skip.shape[1] != x.shape[1]:
-                # sk_sp = self.to_spatial(skip, *self._hw(skip))
-                sk_sp = self.to_spatial(skip, h, w)  # use same h,w as upsampled
-                sk_sp = F.interpolate(sk_sp, size=(h, w),
-                                      mode='bilinear', align_corners=False)
+                # skip đến từ level sâu hơn, cần biết H_deep, W_deep của nó
+                # Nếu hw_skip được truyền vào, dùng nó; nếu không, fallback về sqrt (chỉ đúng với square)
+                hw_skip_val = getattr(self, '_last_skip_hw', None)
+                if hw_skip_val is not None:
+                    h_sk, w_sk = hw_skip_val
+                else:
+                    # fallback: assume square (sẽ fail với non-square nếu N không là perfect square)
+                    import math
+                    h_sk = w_sk = int(math.isqrt(skip.shape[1]))
+                    assert h_sk * w_sk == skip.shape[1], \
+                        f"Cannot infer skip hw: N={skip.shape[1]} is not a perfect square. Pass hw_skip explicitly."
+                sk_sp = self.to_spatial(skip, h_sk, w_sk)   # ← dùng h_sk, w_sk thực của skip
+                sk_sp = F.interpolate(sk_sp, size=(h, w), mode='bilinear', align_corners=False)
                 skip, _, _ = self.to_seq(sk_sp)
 
             return self.norm(x + skip), h, w            # (B, N, embed_dim); add h, w for skip merge in up path
@@ -440,22 +487,24 @@ class Reconstruct(nn.Module):
         self.activation = nn.ReLU(inplace=True)
         self.scale_factor = scale_factor
 
-    def forward(self, x, h=None, w=None):
+    def forward(self, x, h=None, w=None, target_h=None, target_w=None):
         if x is None:
             return None
         B, n_patch, hidden = x.size()
         if h is None or w is None:
-            # fallback cho square (backward compat với MoNuSeg 224×224)
             h = w = int(np.sqrt(n_patch))
         assert h * w == n_patch, \
             f"Reconstruct: h*w={h*w} ≠ n_patch={n_patch}. " \
             f"Pass hw explicitly for non-square images."
         x = x.permute(0, 2, 1).contiguous().view(B, hidden, h, w)
-        # h, w = int(np.sqrt(n_patch)), int(np.sqrt(n_patch))
-        # x = x.permute(0, 2, 1)
-        # x = x.contiguous().view(B, hidden, h, w)
-        x = F.interpolate(x, scale_factor=self.scale_factor,
-                          mode='bilinear', align_corners=False)
+
+        # Dùng target size nếu được truyền vào (fix floor-div mismatch với non-square ảnh)
+        if target_h is not None and target_w is not None:
+            x = F.interpolate(x, size=(target_h, target_w),
+                            mode='bilinear', align_corners=False)
+        else:
+            x = F.interpolate(x, scale_factor=self.scale_factor,
+                            mode='bilinear', align_corners=False)
         out = self.conv(x)
         out = self.norm(out)
         out = self.activation(out)
