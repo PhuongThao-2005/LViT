@@ -75,10 +75,11 @@ def train_one_epoch(loader, model, criterion, optimizer, writer,
         loss_val = loss.item()  # lưu trước khi chia accumulation
 
         loss = loss / accumulation_steps
-        if scaler is not None:
-            scaler.scale(loss).backward()
-        else:
-            loss.backward()
+        if optimizer is not None:   # optimizer=None khi val → skip backward
+            if scaler is not None:
+                scaler.scale(loss).backward()
+            else:
+                loss.backward()
 
         if i % accumulation_steps == 0 or i == len(loader):
             if scaler is not None:

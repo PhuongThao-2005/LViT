@@ -314,7 +314,7 @@ def main_loop(model, batch_size=config.batch_size, model_type='', tensorboard=Tr
         with torch.no_grad():
             model.eval()
             val_loss, val_dice = train_one_epoch(val_loader, model, criterion,
-                                                 optimizer, writer, epoch,
+                                                 None, writer, epoch,
                                                  lr_scheduler, model_type, logger,
                                                  scaler=None)   # FIX: val không dùng AMP scaler
 
