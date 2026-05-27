@@ -228,7 +228,7 @@ class LV2D(Dataset):
         self.one_hot_mask = one_hot_mask
         self.rowtext = row_text
         self.task_name = task_name
-        self.text_embedder = HFTextEmbedder(model_name="bert-base-uncased", max_tokens=14)
+        self.text_embedder = HFTextEmbedder(model_name="bert-base-uncased", max_tokens=10)
 
         if joint_transform:
             self.joint_transform = joint_transform

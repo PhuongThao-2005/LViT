@@ -24,6 +24,7 @@ resize_images = False  # set False to use original image resolution (best with E
 print_frequency = 50
 save_frequency = 10
 vis_frequency = 50
+max_tokens = 10   # BERT token count per sample
 
 early_stopping_patience = 100
 

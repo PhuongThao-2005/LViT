@@ -55,8 +55,9 @@ def train_one_epoch(loader, model, criterion, optimizer, writer,
         masks  = sampled_batch['label'].to(device).float()
         text   = sampled_batch['text'].to(device).float()
 
-        if text.shape[1] > 10:
-            text = text[:, :10, :]
+        _max_tok = getattr(config, 'max_tokens', 10)
+        if text.shape[1] > _max_tok:
+            text = text[:, :_max_tok, :]
 
         labeled_mask = masks.sum(dim=(-2, -1)).view(-1) > 0
 
