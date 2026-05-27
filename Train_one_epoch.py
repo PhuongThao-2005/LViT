@@ -81,7 +81,7 @@ def train_one_epoch(loader, model, criterion, optimizer, writer,
             else:
                 loss.backward()
 
-        if i % accumulation_steps == 0 or i == len(loader):
+        if optimizer is not None and (i % accumulation_steps == 0 or i == len(loader)):
             if scaler is not None:
                 scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -136,7 +136,7 @@ def train_one_epoch(loader, model, criterion, optimizer, writer,
                           batch_time, average_loss, average_time,
                           train_iou, train_iou_average,
                           train_dice, train_dice_avg, 0, 0, logging_mode,
-                          lr=min(g["lr"] for g in optimizer.param_groups),
+                          lr=min(g["lr"] for g in optimizer.param_groups) if optimizer is not None else 0.0,
                           logger=logger)
 
         if config.tensorboard and writer is not None:
