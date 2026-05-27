@@ -136,19 +136,9 @@ class CascadedGroupAttention(nn.Module):
 
     def forward(self, x):  # x: (B, C, H, W)
         B, C, H, W = x.shape
-        N = H * W
-        wr_sq = self.attention_bias_idxs.shape[0]  # = window_resolution * window_resolution
-        # Khi đi qua LocalWindowAttention, N luôn = wr² (window đã partition đúng kích thước)
-        # Nhánh else chỉ xảy ra khi ảnh nhỏ hơn window (H*W < wr²), gọi trực tiếp từ LocalWindowAttention
-        if N == wr_sq:
-            ab = self.attention_biases[:, self.attention_bias_idxs]
-        else:
-            ab_full = self.attention_biases[:, self.attention_bias_idxs]  # (heads, wr_sq, wr_sq)
-            ab = F.interpolate(
-                ab_full.unsqueeze(0),
-                size=(N, N),
-                mode='bilinear', align_corners=False
-            ).squeeze(0)
+        # ← FIX: đưa buffer về đúng device của x (critical cho DataParallel)
+        bias_idxs = self.attention_bias_idxs.to(x.device)
+        ab = self.attention_biases[:, bias_idxs]
 
         feats_in  = x.chunk(self.num_heads, dim=1)
         feats_out = []
